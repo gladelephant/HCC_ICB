@@ -1,0 +1,159 @@
+## 1. 加载包
+library(tidyverse)
+library(data.table)
+library(DESeq2)
+library(pheatmap)
+library(RColorBrewer)
+library(ggplot2)
+library(EnhancedVolcano)
+
+## 2. 读取 count 矩阵
+count <- fread("RNA_count_matrix.csv", data.table = FALSE)
+count$GeneId<-NULL
+## 假设第一列是 gene id
+
+library(dplyr)
+
+## 重复基因保留表达counts最大的行
+count2 <- count %>%
+  mutate(total_count = rowSums(across(where(is.numeric)))) %>%
+  group_by(GeneSymbol) %>%
+  slice_max(order_by = total_count, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  as.data.frame()
+rownames(count2) <-count2$GeneSymbol
+##保留蛋白编码基因
+library("qs")
+gtf <- qread("Homo_sapiens_gtf")
+proteincoding <- gtf %>% filter(gene_biotype == "protein_coding")
+
+# 剔除 RPS/RPL 核糖体蛋白基因
+genes.use <- grep(
+  pattern = "^(RPS|RPL)",
+  x = rownames(count2),
+  value = TRUE,
+  invert = TRUE
+)
+
+# 再保留 protein coding genes
+genename_filt <- genes.use[genes.use %in% proteincoding$gene_name]
+
+# 过滤 count matrix
+count2_filt <- count2[genename_filt, ]
+count2_filt <- count2[rownames(count2) %in% genename_filt, ]
+count2_filt$GeneSymbol<-NULL
+
+## 3. 读取样本信息
+metadata <- read.csv("RNA_82sample_metadata.csv", row.names = 1)
+
+## metadata 至少包含一列 group
+## 示例：
+## sample_id,group
+## sample1,Sensitive
+## sample2,Sensitive
+## sample3,Resistant
+
+## 4. 保证 count 列顺序和 metadata 行顺序一致
+count <- count2_filt
+count <- count[, rownames(metadata)]
+
+## 5. count 必须是整数
+count <- round(as.matrix(count))
+
+## 6. 过滤低表达基因
+keep <- rowSums(count >= 10) >= 5
+
+count_filt <- count[keep, ]
+
+## 7. 设置分组因子
+table(metadata$ORR_group)
+metadata$ORR_group <- factor(metadata$ORR_group, levels = c("Responder", "Non-responder"))
+
+## 8. 构建 DESeq2 对象
+dds <- DESeqDataSetFromMatrix(
+  countData = count_filt,
+  colData = metadata,
+  design = ~ ORR_group
+)
+
+## 9. 差异分析
+dds <- DESeq(dds)
+
+## Resistant vs Sensitive
+res <- results(dds, contrast = c("ORR_group", "Responder", "Non-responder"))
+
+## 10. 整理结果
+res_df <- as.data.frame(res)
+res_df$gene <- rownames(res_df)
+
+res_df <- res_df %>%
+  arrange(padj) %>%
+  mutate(
+    change = case_when(
+      padj < 0.1 & log2FoldChange > 0.5  ~ "Up",
+      padj < 0.1 & log2FoldChange < -0.5 ~ "Down",
+      TRUE ~ "Stable"
+    )
+  )
+
+write.csv(res_df, "DESeq2_DEG_results.csv", row.names = FALSE)
+ ## 11. 提取显著差异基因
+deg <- res_df %>%
+  filter(padj < 0.1, abs(log2FoldChange) > 0.5)
+
+write.csv(deg, "DEG_padj0.1_log2FC0.5.csv", row.names = FALSE)
+
+
+
+vsd <- vst(dds)
+
+expr <- assay(vsd)
+
+gene_var <- apply(expr,1,var)
+
+hvg <- names(sort(gene_var,decreasing = TRUE))[1:2000]
+
+pca <- prcomp(t(expr[hvg, ]))
+
+
+# PCA坐标
+pca_df <- as.data.frame(pca$x)
+
+# 加入样本信息
+pca_df <- cbind(
+  pca_df,
+  as.data.frame(colData(dds)[rownames(pca_df), ])
+)
+
+# 解释方差比例
+percentVar <- round(100 * (pca$sdev^2 / sum(pca$sdev^2)), 1)
+
+library(ggplot2)
+
+ggplot(pca_df, aes(x = PC1, y = PC2, color = ORR_group)) +
+  geom_point(size = 4) +
+  xlab(paste0("PC1: ", percentVar[1], "%")) +
+  ylab(paste0("PC2: ", percentVar[2], "%")) +
+  theme_classic()
+
+library(pheatmap)
+
+topgenes <- names(sort(gene_var, decreasing=TRUE))[1:50]
+sig <- c(
+  "ROBO2","SCN1A","CALCA","PCSK1N",
+  "CADM2","TRPM3","DLK1","AFP",
+  "VEGFD","HAVCR1","ROR1","ROR2"
+)
+
+sig <- intersect(sig, rownames(expr))
+
+pheatmap(
+  expr[sig, ],
+  scale="row",
+  annotation_col=as.data.frame(colData(dds)["ORR_group"])
+)
+pheatmap(
+  expr[topgenes, ],
+  scale="row",
+  annotation_col=as.data.frame(colData(dds)["ORR_group"])
+)
