@@ -1,0 +1,161 @@
+#免疫治疗数据集合并，metadata清洗
+## 01. A+T_scrnaseq_IMBRAVE150#####========================================
+scobj1<-readRDS("A+T_scrnaseq_IMBRAVE150.rds")
+scobj1$orig.ident<-scobj1$Patient_ID
+scobj1$condition <- "pre_treatment"
+table(scobj1@meta.data$Response)
+scobj1 <- subset(scobj1, Response %in% c("NonResponder", "Responder"))
+scobj1$group <- ifelse(
+  scobj1$Response == "NonResponder",
+  "pre_resistant",
+  "pre_sensitive"
+)
+scobj1@meta.data$Week<-NULL
+table(scobj1@meta.data$Tumour_ID,scobj1@meta.data$Patient_ID)
+scobj1@meta.data$Tumour_ID<-NULL
+scobj1@meta.data$Patient_ID<-NULL
+colnames(scobj1@meta.data)
+colnames(scobj1@meta.data)[colnames(scobj1@meta.data) == "Response"] <- "response"
+colnames(scobj1@meta.data)[colnames(scobj1@meta.data) == "Treatment"] <- "treatment"
+scobj1$response[scobj1$response == "NonResponder"] <- "Non_responder"
+table(scobj1@meta.data$response)
+scobj1@meta.data$dataset <- "IMBRAVE150"
+scobj1@meta.data$sample <- scobj1@meta.data$orig.ident
+scobj1@meta.data$lesion <- "tumor"
+write_rds(scobj1,"./免疫治疗数据集合并/A+T_scrnaseq_IMBRAVE150.rds")
+## 02. HCC_JH_Youqiong#####========================================
+scobj2<-readRDS("HCC_JH_Youqiong.rds")
+table(scobj2@meta.data$orig.ident)
+table(scobj2@meta.data$Pat_Tissues)
+scobj2@meta.data$orig.ident<-scobj2@meta.data$Pat_Tissues
+scobj2@meta.data$sample <-scobj2@meta.data$Pat_Tissues
+scobj2$lesion <- ifelse(
+  scobj2$Tissues == "N",
+  "normal",
+  "tumor"
+)
+table(scobj2$lesion)
+scobj2@meta.data$dataset <- "skrx2fz79n"
+scobj2$response <- "Non_responder"
+scobj2$condition <- "post_treatment"
+scobj2$group <- "post_resistant"
+scobj2$treatment <- "anti-PD-1"
+
+keep_cols <- c(
+  "orig.ident",
+  "nCount_RNA",
+  "nFeature_RNA",
+  "response",
+  "treatment",
+  "condition",
+  "group",
+  "dataset",
+  "sample",
+  "lesion"
+)
+
+scobj2@meta.data <- scobj2@meta.data[, keep_cols, drop = FALSE]
+write_rds(scobj2,"./免疫治疗数据集合并/HCC_JH_Youqiong.rds")
+##03.Wangkui_HCC_post_ICB ###================================================================================
+scobj3<-readRDS("Wangkui_HCC_post_ICB.rds")
+table(scobj3@meta.data$orig.ident)
+scobj3$condition <- "post_treatment"
+table(scobj3@meta.data$lesion)
+scobj3$lesion[scobj3$lesion == "ANT"] <- "peritumoral"
+scobj3$lesion[scobj3$lesion == "Normal"] <- "normal"
+scobj3$lesion[scobj3$lesion == "Tumor"] <- "tumor"
+table(scobj3$response )
+keep_cols <- c(
+  "orig.ident",
+  "nCount_RNA",
+  "nFeature_RNA",
+  "response",
+  "treatment",
+  "condition",
+  "group",
+  "dataset",
+  "sample",
+  "lesion"
+)
+scobj3$condition <- "post_treatment"
+scobj3@meta.data <- scobj3@meta.data[, keep_cols, drop = FALSE]
+scobj3$dataset <-"Inhouse"
+scobj3$group <- ifelse(
+  scobj3$response == "Non_responder",
+  "post_resistant",
+  "post_sensitive"
+)
+table(scobj3$group)
+table(scobj3$response)
+write_rds(scobj3,"./免疫治疗数据集合并/Wangkui_HCC_post_ICB.rds")
+#04.###================================================================================
+scobj4<-readRDS("F:\\GSE206325_HCC_ICB_Nat_Med.rds")
+table(scobj4$patient_ID,scobj4$tissue)
+scobj4$sample <- paste(scobj4$patient_ID, scobj4$tissue, sep = "_")
+table(scobj4$sample)
+scobj4$orig.ident<-scobj4$sample
+scobj4$tissue[scobj4$tissue == "Normal"] <- "normal"
+scobj4$tissue[scobj4$tissue == "Tumor"] <- "tumor"
+colnames(scobj4@meta.data)[colnames(scobj4@meta.data) == "tissue"] <- "lesion"
+colnames(scobj4@meta.data)[colnames(scobj4@meta.data) == "Response"] <- "response"
+colnames(scobj4@meta.data)[colnames(scobj4@meta.data) == "Drug"] <- "treatment"
+colnames(scobj4@meta.data)[colnames(scobj4@meta.data) == "nCount_originalexp"] <- "nCount_RNA"
+colnames(scobj4@meta.data)[colnames(scobj4@meta.data) == "nFeature_originalexp"] <- "nFeature_RNA"
+
+scobj4$orig.ident<-scobj1$Patient_ID
+scobj4$condition <- "post_treatment"
+table(scobj1@meta.data$Response)
+
+scobj4$response[scobj4$response == "Nonresponder"] <- "Non_responder"
+scobj4$dataset<-"GSE206325"
+table(scobj4$response)
+scobj4$group <- ifelse(
+  scobj4$response == "Non_responder",
+  "post_resistant",
+  "post_sensitive"
+)
+scobj4$treatment<- NULL
+colnames(scobj4@meta.data)[colnames(scobj4@meta.data) == "treatment.1"] <- "treatment"
+
+
+keep_cols <- c(
+  "orig.ident",
+  "nCount_RNA",
+  "nFeature_RNA",
+  "response",
+  "treatment",
+  "condition",
+  "group",
+  "dataset",
+  "sample",
+  "lesion"
+)
+scobj4@meta.data <- scobj4@meta.data[, keep_cols, drop = FALSE]
+
+write_rds(scobj4,"./免疫治疗数据集合并/GSE206325_HCC_ICB_Nat_Med.rds")
+
+
+scobj1$barcodes <-row.names(scobj1@meta.data)
+scobj2$barcodes <-row.names(scobj2@meta.data)
+scobj3$barcodes <-row.names(scobj3@meta.data)
+scobj4$barcodes <-row.names(scobj4@meta.data)
+
+table(scobj4@meta.data$treatment)
+
+merged_obj <- merge(
+  x = scobj1,
+  y = list(scobj2, scobj3, scobj4)
+)
+
+keep_cells <- rownames(merged_obj@meta.data)[
+  !is.na(merged_obj@meta.data$treatment)
+]
+
+scobj5 <- subset(
+  merged_obj,
+  cells = keep_cells
+)
+
+colSums(is.na(scobj5@meta.data))
+
+write_rds(scobj5,"D:\\HCC_ICB_atlas.rds")
