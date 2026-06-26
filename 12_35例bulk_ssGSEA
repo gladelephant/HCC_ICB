@@ -1,0 +1,97 @@
+library(GSVA)
+library(GSEABase)
+library(ggplot2)
+library(ggpubr)
+
+## 你的60个基因集合
+my_gene_set <- c("MBNL3","REG3A","GLUD1","AFP","PLPPR1","AIFM2","CACFD1","C1QTNF3","B9D1","RELN","NR6A1","FAM110B","PCSK1N","ADGRD1",
+                "CTNNA2","GLUD2","PEG3","SNTG1","OCA2","MAMSTR","SCARA3","BSN","SYN3","HAVCR1","ROBO2","DLK1","TRPM3","CALCA","NSUN7")
+
+## 和表达矩阵取交集
+my_gene_set_use <- intersect(my_gene_set, rownames(expr))
+length(my_gene_set_use)
+
+gene_sets <- list(ICB_resistance_signature = my_gene_set_use)
+
+param <- ssgseaParam(
+  exprData = expr,
+  geneSets = gene_sets
+)
+
+ssgsea_score <- gsva(param)
+
+score <- as.numeric(ssgsea_score[1, ])
+
+ssgsea_df <- data.frame(
+  Sample = colnames(ssgsea_score),
+  Score = score,
+  ORR_group = metadata[colnames(ssgsea_score), "ORR_group"]
+)
+
+res <- wilcox.test(
+  Score ~ ORR_group,
+  data = ssgsea_df,
+  alternative = "less"
+)
+pvalue <- res$p.value
+
+library(ggplot2)
+
+ggplot(
+  ssgsea_df,
+  aes(x = ORR_group,
+      y = Score,
+      fill = ORR_group)
+) +
+  geom_boxplot(
+    width = 0.45,
+    outlier.shape = NA,
+    color = "black",
+    linewidth = 0.6
+  ) +
+  geom_jitter(
+    width = 0.1,
+    size = 2,
+    alpha = 0.85,
+    color = "black"
+  ) +
+  annotate(
+    "text",
+    x = 1.5,
+    y = max(ssgsea_df$Score) * 1.05,
+    label = paste0("One-sided Wilcoxon\nP = ", signif(pvalue, 3)),
+    size = 5
+  ) +
+  scale_fill_manual(values = c(
+    "Responder" = "#4DBBD5",
+    "Non-responder" = "#E64B35"
+  )) +
+  labs(
+    x = NULL,
+    y = "ssGSEA enrichment score"
+  ) +
+  theme_classic(base_size = 15) +
+  theme(
+    legend.position = "none",
+    axis.title.x = element_blank(),
+    axis.title.y = element_text(size = 15),
+    axis.text.x = element_text(
+      angle = 45,
+      hjust = 1,
+      vjust = 1,
+      size = 13,
+      colour = "black"
+    ),
+    axis.text.y = element_text(
+      size = 13,
+      colour = "black"
+    ),
+    axis.line = element_line(
+      colour = "black",
+      linewidth = 0.8
+    ),
+    axis.ticks = element_line(
+      colour = "black",
+      linewidth = 0.8
+    )
+  )
