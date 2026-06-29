@@ -1,0 +1,50 @@
+library(limma)
+
+metadata <- read.csv("Bulk_atlas_metadata.csv", row.names = 1)
+metadata$Sample[1:17] <- paste0("X", metadata$Sample[1:17])
+
+rownames(metadata) <- as.character(metadata$Sample)
+colnames(merged) <- as.character(colnames(merged))
+
+metadata <- metadata[colnames(merged), ]
+
+all(rownames(metadata) == colnames(merged))
+#####================================================================================
+metadata$ORR_group <- factor(
+  metadata$ORR_group,
+  levels = c("Non_responder", "Responder")
+)
+
+metadata <- metadata[colnames(merged), , drop = FALSE]
+
+all(rownames(metadata) == colnames(merged))
+nrow(metadata)
+ncol(merged)
+
+merged <- as.matrix(merged)
+mode(merged) <- "numeric"
+
+metadata$ORR_group <- factor(metadata$ORR_group,
+                             levels = c("Non_responder", "Responder")) #第一个level是基线 
+
+metadata$dataset <- factor(metadata$dataset)
+
+design <- model.matrix(~ dataset + ORR_group, data = metadata)
+
+dim(design)
+dim(merged)
+
+
+design <- model.matrix(
+  ~ dataset + ORR_group,
+  data = metadata
+)
+
+fit <- lmFit(merged, design)
+fit <- eBayes(fit)
+
+deg <- topTable(
+  fit,
+  coef = "ORR_groupResponder",
+  number = Inf
+)  
