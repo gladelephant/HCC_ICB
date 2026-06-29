@@ -1,0 +1,258 @@
+library(GSVA)
+library(GSEABase)
+library(ggplot2)
+library(ggpubr)
+library(readxl)
+library(org.Hs.eg.db)
+df <- read_excel("GSE181946_count_HCC免疫治疗.xlsx")
+View(df)
+
+install.packages(
+  "org.Hs.eg.db_3.23.1.tar.gz",
+  repos = NULL,
+  type = "source"
+)
+
+df$GeneSymbol <- mapIds(
+  org.Hs.eg.db,
+  keys = df$Tag,
+  column = "SYMBOL",
+  keytype = "ENSEMBL",
+  multiVals = "first"
+)
+
+##保留蛋白编码基因
+library("qs")
+gtf <- qread("G:\\HCC_靶免治疗\\bulk_in_house\\Homo_sapiens_gtf")
+proteincoding <- gtf %>% filter(gene_biotype == "protein_coding")
+# 剔除 RPS/RPL 核糖体蛋白基因
+genes.use <- grep(
+  pattern = "^(RPS|RPL)",
+  x = df$GeneSymbol,
+  value = TRUE,
+  invert = TRUE
+)
+
+# 再保留 protein coding genes
+genename_filt <- genes.use[genes.use %in% proteincoding$gene_name]
+
+# 过滤 count matrix
+df_filt <- df[
+  !is.na(df$GeneSymbol) &
+    df$GeneSymbol %in% genename_filt,
+]
+
+## 2. 读取 count 矩阵
+count <- df_filt
+count$Tag <-NULL
+## 假设第一列是 gene id
+## 重复基因保留表达counts最大的行
+count2 <- count %>%
+  mutate(total_count = rowSums(across(where(is.numeric)))) %>%
+  group_by(GeneSymbol) %>%
+  slice_max(order_by = total_count, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  as.data.frame()
+rownames(count2) <-count2$GeneSymbol
+count2$total_count<-NULL
+count2$GeneSymbol<-NULL
+
+gset = fread("GSE181946_series_matrix.txt",data.table = F,sep = "\t",skip=30)
+
+meta <- data.frame(
+  GSM = c(
+    "GSM5514677","GSM5514678","GSM5514679","GSM5514680",
+    "GSM5514681","GSM5514682","GSM5514683","GSM5514684",
+    "GSM5514685","GSM5514686","GSM5514687","GSM5514688",
+    "GSM5514689","GSM5514690","GSM5514691","GSM5514692",
+    "GSM5514693"
+  ),
+  Sample = c(
+    "327","332","333","334","335",
+    "337","338","343","358","360",
+    "342","355","251","445",
+    "480","500","605"
+  ),
+  Response = c(
+    rep("PD", 10),
+    rep("PR", 7)
+  ),
+  stringsAsFactors = FALSE
+)
+
+
+count <- count2
+
+## 6. 过滤低表达基因
+keep <- rowSums(count >= 10) >= 5
+
+count_filt <- count[keep, ]
+
+## 7. 设置分组因子
+table(meta$Response)
+meta$Response <- factor(meta$Response, levels = c("PR", "PD"))
+
+## 8. 构建 DESeq2 对象
+dds <- DESeqDataSetFromMatrix(
+  countData = count_filt,
+  colData = meta,
+  design = ~ Response
+)
+
+## 9. 差异分析
+dds <- DESeq(dds)
+
+## Resistant vs Sensitive
+res <- results(dds, contrast = c("Response", "PR", "PD"))
+
+## 10. 整理结果
+res_df <- as.data.frame(res)
+res_df$gene <- rownames(res_df)
+
+res_df <- res_df %>%
+  arrange(padj) %>%
+  mutate(
+    change = case_when(
+      padj < 0.05 & log2FoldChange > 1  ~ "Up",
+      padj < 0.05 & log2FoldChange < -1 ~ "Down",
+      TRUE ~ "Stable"
+    )
+  )
+
+write.csv(res_df, "DESeq2_DEG_results.csv", row.names = FALSE)
+## 11. 提取显著差异基因
+deg <- res_df %>%
+  filter(padj < 0.05, abs(log2FoldChange) > 1)
+
+write.csv(deg, "DEG_padj0.1_log2FC0.5.csv", row.names = FALSE)
+
+## 8. Save analysis objects -------------------------------------------------
+
+saveRDS(
+  list(
+    expression_matrix = count,
+    filter_matrix = count_filt,
+    metadata = meta,
+    deg_all = res_df,
+    deg_sig = deg
+  ),
+  file = "GSE181946_HCC免疫治疗.rds")
+
+vsd <- vst(dds)
+
+expr <- assay(vsd)
+
+gene_var <- apply(expr,1,var)
+
+#####================================================================================
+#####================================================================================
+
+## 你的60个基因集合
+my_gene_set <- c("MBNL3","REG3A","GLUD1","AFP","PLPPR1","AIFM2","CACFD1","C1QTNF3","B9D1","RELN","NR6A1","FAM110B","PCSK1N","ADGRD1",
+                 "CTNNA2","GLUD2","PEG3","SNTG1","OCA2","MAMSTR","SCARA3","BSN","SYN3","HAVCR1","ROBO2","DLK1","TRPM3","CALCA","NSUN7")
+
+my_gene_set <- c(
+  "SCN1A", "TRPM3", "ROBO2", "AFP", "HAVCR1", "PCSK1N", "CADPS", "CALCA",
+  "NAT8L", "B3GALT1", "PEG3", "GLP1R", "AIFM2", "CADM2", "USP27X", "TYSND1",
+  "KIF26B", "VEGFD", "SYN3", "B9D1", "ADAM23", "ADGRD1", "MACROH2A2", "NEURL1",
+  "CACFD1", "FRRS1L", "GLUD1", "FAM110B", "ECEL1", "CSPP1", "SLC30A2", "SCARA3",
+  "IGDCC4", "C1QTNF3", "NKAIN1", "IZUMO1", "BCAS1", "AZIN1", "RHBDL3", "ZNF233",
+  "EIF3E", "CAGE1", "OCA2", "RASD1", "GLUD2", "NSUN7", "RELN", "PLPPR1",
+  "EEF1D", "KCNMB2", "REG3A", "DLK1", "CTNNA2", "ABCB5", "PABPC1", "KLHL30",
+  "FAT3", "BSN", "NR6A1", "SNTG1", "LHX4", "GNG4", "MAMSTR", "GGT1", "MBNL3")
+
+## 和表达矩阵取交集
+my_gene_set_use <- intersect(my_gene_set, rownames(expr))
+length(my_gene_set_use)
+gene_sets <- list(ICB_resistance_signature = my_gene_set_use)
+
+param <- ssgseaParam(
+  exprData = expr,
+  geneSets = gene_sets
+)
+
+ssgsea_score <- gsva(param)
+
+score <- as.numeric(ssgsea_score[1, ])
+
+meta$ORR_group <- ifelse(
+  meta$Response == "PD",
+  "Non_responder",
+  ifelse(meta$Response == "PR", "Responder", NA)
+)
+row.names(meta) <- meta$Sample
+
+ssgsea_df <- data.frame(
+  Sample = colnames(ssgsea_score),
+  Score = score,
+  ORR_group = meta[colnames(ssgsea_score), "ORR_group"]
+)
+
+res <- wilcox.test(
+  Score ~ ORR_group,
+  data = ssgsea_df,
+  alternative = "less"
+)
+pvalue <- res$p.value
+
+library(ggplot2)
+
+ggplot(
+  ssgsea_df,
+  aes(x = ORR_group,
+      y = Score,
+      fill = ORR_group)
+) +
+  geom_boxplot(
+    width = 0.45,
+    outlier.shape = NA,
+    color = "black",
+    linewidth = 0.6
+  ) +
+  geom_jitter(
+    width = 0.1,
+    size = 2,
+    alpha = 0.85,
+    color = "black"
+  ) +
+  annotate(
+    "text",
+    x = 1.5,
+    y = max(ssgsea_df$Score) * 1.05,
+    label = paste0("P = ", signif(pvalue, 3)),
+    size = 3
+  ) +
+  scale_fill_manual(values = c(
+    "Responder" = "#1f77b4", 
+    "Non_responder" = "#ff7f0e"
+  )) +
+  labs(
+    x = NULL,
+    y = "ssGSEA enrichment score"
+  ) +
+  theme_classic(base_size = 15) +
+  theme(
+    legend.position = "none",
+    axis.title.x = element_blank(),
+    axis.title.y = element_text(size = 15),
+    axis.text.x = element_text(
+      angle = 45,
+      hjust = 1,
+      vjust = 1,
+      size = 13,
+      colour = "black"
+    ),
+    axis.text.y = element_text(
+      size = 13,
+      colour = "black"
+    ),
+    axis.line = element_line(
+      colour = "black",
+      linewidth = 0.8
+    ),
+    axis.ticks = element_line(
+      colour = "black",
+      linewidth = 0.8
+    )
+  )
+
