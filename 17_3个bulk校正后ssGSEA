@@ -1,0 +1,184 @@
+library(GSVA)
+library(GSEABase)
+library(ggplot2)
+library(ggpubr)
+library(rlang)
+#####================================================================================
+#计算去批次之后的矩阵#####################################
+metadata<-read.csv("Bulk_atlas_metadata.csv",row.names = 1)
+library(tidyverse) # ggplot2 stringer dplyr tidyr readr purrr  tibble forcats
+library(data.table) #多核读取文件
+library(edgeR)
+library(limma)
+library(gplots)
+library(DESeq2)
+library(RColorBrewer)
+merged<-read.csv("HCC_preICB_log2TPM.csv",row.names = 1)
+getwd()
+#RIMA_pipeline/src/preprocess/batch_removal.R 刘小乐教授方法
+log2TPM_1_counts_mat <- merged
+expr.dat <- log2TPM_1_counts_mat
+
+#使用刘小乐教授RIMA教程的方法
+###filtering out genes with low variance among samples
+CVFILTER <- 0
+mean_nolym <- apply(expr.dat,1,mean) #计算每一行的平均值
+var_nolym <- apply(expr.dat,1,var) ##计算每一行的方差
+cv_nolym <- abs(var_nolym/mean_nolym) #计算了每一行的变异系数（CV），方法是取方差除以平均值的绝对值
+filt_genes <- subset(cv_nolym, cv_nolym > CVFILTER)
+## Select those genes that pass variance filtering
+exprZero <- expr.dat
+expr.dat <- expr.dat[rownames(expr.dat) %in% names(filt_genes),] #14378基因
+exprZero <- subset(exprZero, !(rownames(exprZero) %in% names(filt_genes)))
+
+#设置颜色
+library(RColorBrewer)
+colors<-brewer.pal(12,"Set3")
+#去批次前的数据分布
+boxplot(log2TPM_1_counts_mat,col=colors,notch=T,outline=FALSE, las=2)
+#读取分组信息
+groups <- metadata
+table(groups$dataset)
+## 创建分组信息向量
+group_list <- c(rep("GSE181946", 17), rep("GSE202069", 17), rep("GSE215011", 10))
+
+#去除批次效应
+Batch_limma <- removeBatchEffect(log2TPM_1_counts_mat,batch = group_list)
+Batch_limma_draw <- Batch_limma %>% data.frame()
+#检查去批次后的数据分布
+boxplot(Batch_limma_draw,col=colors,notch=T,outline=FALSE, las=2)
+write.csv(Batch_limma_draw,"去批次后的log2(tpm+1).csv")
+
+#####================================================================================
+## 你的60个基因集合
+my_gene_set <- c("MBNL3","REG3A","GLUD1","AFP","PLPPR1","AIFM2","CACFD1","C1QTNF3","B9D1","RELN","NR6A1","FAM110B","PCSK1N","ADGRD1",
+                "CTNNA2","GLUD2","PEG3","SNTG1","OCA2","MAMSTR","SCARA3","BSN","SYN3","HAVCR1","ROBO2","DLK1","TRPM3","CALCA","NSUN7")
+#####================================================================================
+# my_gene_set <- c(
+#   "SCN1A", "TRPM3", "ROBO2", "AFP", "HAVCR1", "PCSK1N", "CADPS", "CALCA",
+#   "NAT8L", "B3GALT1", "PEG3", "GLP1R", "AIFM2", "CADM2", "USP27X", "TYSND1",
+#   "KIF26B", "VEGFD", "SYN3", "B9D1", "ADAM23", "ADGRD1", "MACROH2A2", "NEURL1",
+#   "CACFD1", "FRRS1L", "GLUD1", "FAM110B", "ECEL1", "CSPP1", "SLC30A2", "SCARA3",
+#   "IGDCC4", "C1QTNF3", "NKAIN1", "IZUMO1", "BCAS1", "AZIN1", "RHBDL3", "ZNF233",
+#   "EIF3E", "CAGE1", "OCA2", "RASD1", "GLUD2", "NSUN7", "RELN", "PLPPR1",
+#   "EEF1D", "KCNMB2", "REG3A", "DLK1", "CTNNA2", "ABCB5", "PABPC1", "KLHL30",
+#   "FAT3", "BSN", "NR6A1", "SNTG1", "LHX4", "GNG4", "MAMSTR", "GGT1", "MBNL3")
+
+merged <- as.matrix(Batch_limma_draw)
+
+mode(merged) <- "numeric"
+expr<-merged
+
+## 和表达矩阵取交集
+my_gene_set_use <- intersect(my_gene_set, rownames(expr))
+length(my_gene_set_use)
+gene_sets <- list(ICB_resistance_signature = my_gene_set_use)
+expr <- as.matrix(expr)
+mode(expr) <- "numeric"
+#colnames(expr)[1:17] <- paste0("X", colnames(expr)[1:17])
+#expr <- expr[, -c(1:17)]
+param <- ssgseaParam(
+  exprData = expr,
+  geneSets = gene_sets,
+  normalize = FALSE
+)
+ssgsea_score <- gsva(param)
+score <- as.numeric(ssgsea_score[1, ])
+ssgsea_df <- data.frame(
+  Sample = colnames(ssgsea_score),
+  Score = score,
+  Dataset = metadata[colnames(ssgsea_score), "dataset"],
+  ORR_group = metadata[colnames(ssgsea_score), "ORR_group"]
+)
+res <- wilcox.test(
+  Score ~ ORR_group,
+  data = ssgsea_df,
+  alternative = "greater"
+)
+pvalue <- res$p.value
+
+ggplot(
+  ssgsea_df,
+  aes(x = ORR_group,
+      y = Score,
+      fill = ORR_group)
+) +
+  geom_boxplot(
+    width = 0.45,
+    outlier.shape = NA,
+    color = "black",
+    linewidth = 0.6
+  ) +
+  geom_jitter(
+    width = 0.1,
+    size = 2,
+    alpha = 0.85,
+    color = "black"
+  ) +
+  annotate(
+    "text",
+    x = 1.5,
+    y = max(ssgsea_df$Score) * 1.05,
+    label = paste0("P = ", signif(pvalue, 3)),
+    size = 3
+  ) +
+  scale_fill_manual(values = c(
+    "Responder" = "#1f77b4", 
+    "Non_responder" = "#ff7f0e"
+  )) +
+  labs(
+    x = NULL,
+    y = "ssGSEA enrichment score"
+  ) +
+  theme_classic(base_size = 15) +
+  theme(
+    legend.position = "none",
+    axis.title.x = element_blank(),
+    axis.title.y = element_text(size = 15),
+    axis.text.x = element_text(
+      angle = 45,
+      hjust = 1,
+      vjust = 1,
+      size = 13,
+      colour = "black"
+    ),
+    axis.text.y = element_text(
+      size = 13,
+      colour = "black"
+    ),
+    axis.line = element_line(
+      colour = "black",
+      linewidth = 0.8
+    ),
+    axis.ticks = element_line(
+      colour = "black",
+      linewidth = 0.8
+    )
+  )
+
+# 分面绘图代码#####################################
+# ggplot(ssgsea_df,
+#        aes(ORR_group, Score, fill = ORR_group)) +
+#   geom_boxplot() +
+#   geom_jitter(width = 0.15) +
+#   facet_wrap(~Dataset)
+
+
+library(broom)
+library(pROC)
+
+roc_obj <- roc(
+  response = ssgsea_df$ORR_group,
+  predictor = ssgsea_df$Score,
+  levels = c("Responder", "Non_responder")
+)
+
+plot(
+  roc_obj,
+  col = "#D55E00",
+  lwd = 3,
+  print.auc = TRUE
+)
+
+auc(roc_obj)
+```
