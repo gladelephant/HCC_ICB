@@ -3,16 +3,19 @@ library(GSEABase)
 library(ggplot2)
 library(ggpubr)
 library(rlang)
-#####================================================================================
-#计算去批次之后的矩阵#####################################
-metadata<-read.csv("Bulk_atlas_metadata.csv",row.names = 1)
 library(tidyverse) # ggplot2 stringer dplyr tidyr readr purrr  tibble forcats
 library(data.table) #多核读取文件
 library(edgeR)
 library(limma)
 library(gplots)
 library(DESeq2)
+library(broom)
+library(pROC)
 library(RColorBrewer)
+#####================================================================================
+#计算去批次之后的矩阵#####################################
+metadata<-read.csv("Bulk_atlas_metadata.csv",row.names = 1)
+
 merged<-read.csv("HCC_preICB_log2TPM.csv",row.names = 1)
 getwd()
 #RIMA_pipeline/src/preprocess/batch_removal.R 刘小乐教授方法
@@ -164,8 +167,7 @@ ggplot(
 #   facet_wrap(~Dataset)
 
 
-library(broom)
-library(pROC)
+
 
 roc_obj <- roc(
   response = ssgsea_df$ORR_group,
