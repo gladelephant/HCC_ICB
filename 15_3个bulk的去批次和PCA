@@ -1,0 +1,66 @@
+metadata<-read.csv("Bulk_atlas_metadata.csv",row.names = 1)
+library(tidyverse) # ggplot2 stringer dplyr tidyr readr purrr  tibble forcats
+library(data.table) #多核读取文件
+library(edgeR)
+library(limma)
+library(gplots)
+library(DESeq2)
+library(RColorBrewer)
+merged<-read.csv("HCC_preICB_log2TPM.csv",row.names = 1)
+getwd()
+#RIMA_pipeline/src/preprocess/batch_removal.R 刘小乐教授方法
+log2TPM_1_counts_mat <- merged
+expr.dat <- log2TPM_1_counts_mat
+
+#使用刘小乐教授RIMA教程的方法
+###filtering out genes with low variance among samples
+CVFILTER <- 0
+mean_nolym <- apply(expr.dat,1,mean) #计算每一行的平均值
+var_nolym <- apply(expr.dat,1,var) ##计算每一行的方差
+cv_nolym <- abs(var_nolym/mean_nolym) #计算了每一行的变异系数（CV），方法是取方差除以平均值的绝对值
+filt_genes <- subset(cv_nolym, cv_nolym > CVFILTER)
+## Select those genes that pass variance filtering
+exprZero <- expr.dat
+expr.dat <- expr.dat[rownames(expr.dat) %in% names(filt_genes),] #14378基因
+exprZero <- subset(exprZero, !(rownames(exprZero) %in% names(filt_genes)))
+
+#设置颜色
+library(RColorBrewer)
+colors<-brewer.pal(12,"Set3")
+#去批次前的数据分布
+boxplot(log2TPM_1_counts_mat,col=colors,notch=T,outline=FALSE, las=2)
+#读取分组信息
+groups <- metadata
+table(groups$dataset)
+## 创建分组信息向量
+group_list <- c(rep("GSE181946", 17), rep("GSE202069", 17), rep("GSE215011", 10))
+
+#去除批次效应
+Batch_limma <- removeBatchEffect(log2TPM_1_counts_mat,batch = group_list)
+Batch_limma_draw <- Batch_limma %>% data.frame()
+#检查去批次后的数据分布
+boxplot(Batch_limma_draw,col=colors,notch=T,outline=FALSE, las=2)
+write.csv(Batch_limma_draw,"去批次后的log2(tpm+1).csv")
+
+#PCA主成分分析############################################################
+data <- Batch_limma_draw
+data=data[rowSums(data==0)!=44,]#删除全部为0的行，否则无法进行主成分分析
+data2=as.data.frame(data)
+data2=t(data2)#PCA分析中基因名要放在每列，每行作为样品名
+data.pca=prcomp(data2,scale. = T)#PCA分析
+summary(data.pca)
+#可视化
+library(factoextra)
+#group=c(rep("GBC",5),rep("DCC",3),rep("Org",1))
+fviz_pca_ind(data.pca,
+             geom.ind = "point", #只展示点不展示label
+             col.ind=group_list,
+             mean.point=F,
+             addEllipses = T, 
+             legend.title="Dataset",
+             ellipse.type="confidence",
+             ellipse.level=0.95,
+             palette = "Set1")+
+  theme_classic()
+#####================================================================================
+
