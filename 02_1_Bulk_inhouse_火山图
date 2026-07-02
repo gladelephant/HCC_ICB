@@ -1,0 +1,86 @@
+library(tidyverse)
+library(ggrepel)
+
+DEGs <- read.csv("DESeq2_DEG_results_v2.csv")
+
+gene_show <- c(
+  "B9D1", "MAMSTR", "SCARA3", "FAM110B", "NR6A1",
+  "DLK1", "ADGRD1", "GLUD2", "PEG3", "RELN"
+)
+
+## 阈值
+fc_cutoff <- 0.5
+padj_cutoff <- 0.1
+
+DEGs <- DEGs %>%
+  mutate(
+    neglog10_padj = -log10(padj),
+    label = ifelse(gene %in% gene_show, gene, ""),
+    sig = case_when(
+      padj < padj_cutoff & log2FoldChange > fc_cutoff ~ "Up",
+      padj < padj_cutoff & log2FoldChange < -fc_cutoff ~ "Down",
+      TRUE ~ "NS"
+    )
+  )
+
+volcano <- ggplot(DEGs, aes(log2FoldChange, neglog10_padj)) +
+  
+  ## 所有基因
+  geom_point(
+    aes(color = sig),
+    size = 0.8,
+    alpha = 0.6
+  ) +
+  
+  ## threshold
+  geom_vline(
+    xintercept = c(-fc_cutoff, fc_cutoff),
+    linetype = "dashed",
+    linewidth = 0.4,
+    color = "grey40"
+  ) +
+  geom_hline(
+    yintercept = -log10(padj_cutoff),
+    linetype = "dashed",
+    linewidth = 0.4,
+    color = "grey40"
+  ) +
+  
+  ## 标签
+  geom_text_repel(
+    aes(label = label),
+    size = 3,
+    fontface = "italic",
+    box.padding = 0.4,
+    point.padding = 0.3,
+    segment.color = "black",
+    max.overlaps = Inf
+  ) +
+  
+  ## 配色
+  scale_color_manual(
+    values = c(
+      "Up"="#D55E00",
+      "Down"="#0072B2",
+      "NS"="grey80"
+    )
+  ) +
+  
+  labs(
+    x = expression(log[2]("Fold Change")),
+    y = expression(-log[10]("Adjusted P value"))
+  ) +
+  
+  theme_bw(base_size = 11) +
+  theme(
+    legend.position = "none",
+    panel.grid = element_blank(),
+    plot.title = element_blank()
+  )
+
+volcano
+
+ggsave("Volcano_plot.pdf",
+       volcano,
+       width = 5,
+       height = 4.5)
