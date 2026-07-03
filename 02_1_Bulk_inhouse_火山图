@@ -5,7 +5,14 @@ DEGs <- read.csv("DESeq2_DEG_results_v2.csv")
 
 gene_show <- c(
   "B9D1", "MAMSTR", "SCARA3", "FAM110B", "NR6A1",
-  "DLK1", "ADGRD1", "GLUD2", "PEG3", "RELN"
+  "DLK1", "ADGRD1", "GLUD2", "PEG3", "RELN", "CXCL9",
+  "IRF1",
+  "GBP1",
+  "BATF2","HLA-DRA",
+  "TAP1", "CD274",
+  "LAG3",
+  "CTLA4",
+  "GZMA"
 )
 
 ## 阈值
