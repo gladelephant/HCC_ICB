@@ -1,0 +1,395 @@
+merged_obj <- merge(
+  x = epi2, 
+  y = list(endo,macro,tcell))
+table(merged_obj@meta.data$clusters)
+vector_non_epi <- c("Endo_5", "Myeloid_2", "T_4", "T_6", "T_9")
+vector_epi <- paste0("Epi_", 0:19)
+vector <- c(vector_non_epi, vector_epi)
+merg3<-subset(merged_obj,subset=clusters %in% vector)
+#下采样#####################################
+#merg3 <- subset(merg3, downsample = 5000)
+table(merg3@meta.data$clusters)
+#cellchat
+# 创建 CellChat 对象
+library(CellChat)
+#提取cellchat中的基因####================================================================================
+db <- CellChatDB.human
+interaction <- db$interaction
+ligands <- unique(interaction$ligand)
+receptors <- unique(interaction$receptor)
+lr_genes <- unique(c(ligands, receptors))
+length(ligands)
+length(receptors)
+length(lr_genes)
+#单个样本占比>80%的亚群####=========================================================
+tab <- table(
+  merg3@meta.data$subcluster,
+  merg3@meta.data$Patient_ID
+)
+
+res <- data.frame(
+  Subcluster = rownames(tab),
+  Total_cells = rowSums(tab),
+  Top_patient = apply(tab, 1, function(x) names(which.max(x))),
+  Top_cells = apply(tab, 1, max),
+  stringsAsFactors = FALSE
+)
+
+res$Top_fraction <- res$Top_cells / res$Total_cells
+
+# 筛选 >80%
+res80 <- res[res$Top_fraction > 0.75, ]
+
+# 按占比排序
+res80 <- res80[order(res80$Top_fraction, decreasing = TRUE), ]
+
+res80
+#####================================================================================
+niche_labels = c(
+  "Hepato_c09",
+  "Endo_c07",
+  "CD4T_c09",
+  "Endo_c05",
+  "CD8T_c05",
+  "Endo_c09",
+  "CD4T_c05",
+  "Mesen_c03",
+  "NK_c02",
+  "CD8T_c04",
+  "CD4T_c03",
+  "Mesen_c02",
+  "Endo_c02",
+  "CD4T_c07")
+#####================================================================================
+merg3 <- subset(merg3, subcluster %in% niche_labels)
+merg3@meta.data$samples<-as.factor(merg3@meta.data$Patient_ID)
+table(merg3@meta.data$subcluster)
+colnames(merg3@meta.data)
+#保留蛋白编码基因#####################################
+gtf <- qread("E:\\shared_input\\Homo_sapiens_gtf")
+proteincoding <- gtf %>% filter(gene_biotype == "protein_coding")
+#剔除RPS基因
+genes.use <- grep(pattern = "^RP[SL][[:digit:]]|^RP[[:digit:]]|^RPSA",
+                  rownames(merg3),value=TRUE, invert=TRUE)
+genename<-rownames(merg3)
+genename_filt<- genename[genename%in% proteincoding$gene_name]
+merg3 <-subset(merg3,features = genename_filt)
+merg3 <- subset(scobj, features = rowSums(scobj@assays$RNA@counts > 0) >= 10)
+merg3 <-subset(merg3,features = lr_genes)
+
+#准备cellchat
+input<-GetAssayData(merg3,layer = "data")
+meta<-merg3@meta.data[,c("subcluster","samples")]
+cellchat <- createCellChat(object = input, meta = meta,group.by = "subcluster")  # 替换 "celltype" 为您的亚群标注列
+groupSize <- as.numeric(table(cellchat@idents)) 
+# 设置数据库 (Human 或 Mouse)
+CellChatDB <- CellChatDB.human  # 使用人类数据库，如果是小鼠数据，则使用 CellChatDB.mouse
+CellChatDB.use <- subsetDB(CellChatDB) #use all CellChatDB except for "Non-protein Signaling" 
+cellchat@DB <- CellChatDB.use # set the used database in the object
+# 预处理数据
+library(future)
+options(future.globals.maxSize = 4 * 1024^3)  # 2 GB
+future::plan("multisession", workers = 16) 
+cellchat <- subsetData(cellchat)
+cellchat <- identifyOverExpressedGenes(cellchat)
+cellchat <- identifyOverExpressedInteractions(cellchat)
+# 计算细胞间通信
+cellchat <- computeCommunProb(cellchat,nboot=20)
+cellchat <- filterCommunication(cellchat, min.cells = 10)
+cellchat <- computeCommunProbPathway(cellchat)
+cellchat <- aggregateNet(cellchat)
+groupSize <- as.numeric(table(cellchat@idents))
+par(mfrow = c(1,2), xpd=TRUE)
+netVisual_circle(cellchat@net$count, vertex.weight = groupSize, weight.scale = T, label.edge= F, title.name = "Number of interactions")
+netVisual_circle(cellchat@net$weight, vertex.weight = groupSize, weight.scale = T, label.edge= F, title.name = "Interaction weights/strength")
+#####================================================================================
+target_group <- "Hepato_c09"
+#####================================================================================
+groupSize <- as.numeric(table(cellchat@idents))
+names(groupSize) <- names(table(cellchat@idents))
+mat <- cellchat@net$weight
+# outgoing: Hepato_c09 -> others
+mat_out <- matrix(
+  0,
+  nrow = nrow(mat),
+  ncol = ncol(mat),
+  dimnames = dimnames(mat)
+)
+mat_out[target_group, ] <- mat[target_group, ]
+
+# incoming: others -> Hepato_c09
+mat_in <- matrix(
+  0,
+  nrow = nrow(mat),
+  ncol = ncol(mat),
+  dimnames = dimnames(mat)
+)
+mat_in[, target_group] <- mat[, target_group]
+
+par(mfrow = c(1, 2), xpd = TRUE)
+
+edge_max <- max(mat_out[target_group, ])
+
+netVisual_circle(
+  mat_out,
+  vertex.weight = groupSize,
+  weight.scale = TRUE,
+  label.edge = FALSE,
+  edge.weight.max = edge_max,
+  edge.width.max = 10,
+  title.name = paste0(target_group, " outgoing")
+)
+#TOP5 outgoing####================================================================================
+top_n <- 5
+
+vals <- mat[target_group, ]
+top_targets <- names(sort(vals, decreasing = TRUE))[1:top_n]
+
+mat_out_top <- matrix(
+  0,
+  nrow = nrow(mat),
+  ncol = ncol(mat),
+  dimnames = dimnames(mat)
+)
+
+mat_out_top[target_group, top_targets] <- mat[target_group, top_targets]
+
+netVisual_circle(
+  mat_out_top,
+  vertex.weight = groupSize,
+  weight.scale = TRUE,
+  label.edge = FALSE,
+  edge.weight.max = max(mat_out_top),
+  edge.width.max = 8,
+  title.name = paste0(target_group, " top ", top_n, " outgoing targets")
+)
+#TOP5 IN####================================================================================
+top_n <- 5
+
+vals <- mat[, target_group]
+
+top_sources <- names(sort(vals, decreasing = TRUE))[1:top_n]
+
+mat_in_top <- matrix(
+  0,
+  nrow = nrow(mat),
+  ncol = ncol(mat),
+  dimnames = dimnames(mat)
+)
+
+mat_in_top[top_sources, target_group] <-
+  mat[top_sources, target_group]
+
+netVisual_circle(
+  mat_in_top,
+  vertex.weight = groupSize,
+  weight.scale = TRUE,
+  label.edge = FALSE,
+  edge.weight.max = max(mat_in_top),
+  edge.width.max = 12,
+  title.name = paste0(target_group, " top ", top_n, " incoming senders")
+)
+ 
+#####================================================================================
+# Hepato_c09 -> all others
+netVisual_bubble(
+  cellchat,
+  sources.use = target_group,
+  targets.use = setdiff(levels(cellchat@idents), target_group),
+  remove.isolate = FALSE,
+  grid.on = FALSE
+)
+#####================================================================================
+# all others -> Hepato_c09
+netVisual_bubble(
+  cellchat,
+  sources.use = setdiff(levels(cellchat@idents), target_group),
+  targets.use = target_group,
+  remove.isolate = FALSE,grid.on = FALSE
+)
+
+ptm = Sys.time()
+# Compute the network centrality scores
+cellchat <- netAnalysis_computeCentrality(cellchat, slot.name = "netP") # the slot 'netP' means the inferred intercellular communication network of signaling pathways
+# Visualize the computed centrality scores using heatmap, allowing ready identification of major signaling roles of cell groups
+netAnalysis_signalingRole_network(cellchat, signaling = pathways.show, width = 8, height = 2.5, font.size = 10)
+ht1 <- netAnalysis_signalingRole_heatmap(cellchat, pattern = "outgoing")
+ht2 <- netAnalysis_signalingRole_heatmap(cellchat, pattern = "incoming")
+ht1 + ht2
+ht1
+#####================================================================================
+
+# Signaling role analysis on the aggregated cell-cell communication network from all signaling pathways
+gg1 <- netAnalysis_signalingRole_scatter(cellchat)
+#> Signaling role analysis on the aggregated cell-cell communication network from all signaling pathways
+# Signaling role analysis on the cell-cell communication networks of interest
+gg2 <- netAnalysis_signalingRole_scatter(cellchat, signaling = c("CXCL", "CCL"))
+#> Signaling role analysis on the cell-cell communication network from user's input
+gg1
+#####================================================================================
+
+mat <- cellchat@net$weight
+
+mat2 <- matrix(
+  0,
+  nrow = nrow(mat),
+  ncol = ncol(mat),
+  dimnames = dimnames(mat)
+)
+
+mat2[target_group, ] <- mat[target_group, ]
+mat2[, target_group] <- mat[, target_group]
+
+group_names <- rownames(mat2)
+
+color.use <- rep("grey80", length(group_names))
+names(color.use) <- group_names
+color.use[target_group] <- "#D55E00"
+
+netVisual_circle(
+  mat2,
+  vertex.weight = groupSize,
+  weight.scale = TRUE,
+  label.edge = FALSE,
+  title.name = paste0(target_group, " interaction landscape"),
+  edge.width.max = 8,
+  vertex.size.max = 22,
+  color.use = color.use
+)
+#####================================================================================
+target_group <- "Hepato_c09"
+
+mat <- cellchat@net$weight
+
+mat2 <- matrix(
+  0,
+  nrow = nrow(mat),
+  ncol = ncol(mat),
+  dimnames = dimnames(mat)
+)
+
+mat2[target_group, ] <- mat[target_group, ]
+mat2[, target_group] <- mat[, target_group]
+
+netVisual_circle(
+  mat2,
+  vertex.weight = groupSize,
+  weight.scale = TRUE,
+  label.edge = FALSE,
+  title.name = paste0(target_group, " incoming and outgoing interactions"),
+  edge.width.max = 8,
+  vertex.size.max = 20
+)
+#####================================================================================
+target_group <- "Hepato_c09"
+
+mat <- cellchat@net$weight
+
+mat2 <- matrix(
+  0,
+  nrow = nrow(mat),
+  ncol = ncol(mat),
+  dimnames = dimnames(mat)
+)
+
+mat2[target_group, ] <- mat[target_group, ]
+
+netVisual_circle(
+  mat2,
+  vertex.weight = groupSize,
+  weight.scale = TRUE,
+  label.edge = FALSE,
+  title.name = paste0(target_group, " outgoing interaction strength"),
+  edge.width.max = 8,
+  vertex.size.max = 20
+)
+#####================================================================================
+target_group <- "Hepato_c09"
+
+mat <- cellchat@net$count
+
+mat2 <- matrix(
+  0,
+  nrow = nrow(mat),
+  ncol = ncol(mat),
+  dimnames = dimnames(mat)
+)
+
+mat2[, target_group] <- mat[, target_group]
+
+netVisual_circle(
+  mat2,
+  vertex.weight = groupSize,
+  weight.scale = TRUE,
+  label.edge = FALSE,
+  title.name = paste0(target_group, " incoming interactions"),
+  edge.width.max = 8,
+  vertex.size.max = 20
+)
+#####================================================================================
+# 获取所有亚群之间的总相互作用强度
+group_size <- as.numeric(table(cellchat@idents))  # 细胞群大小
+net_strength <- netAnalysis_computeCentrality(cellchat)  # 计算中心性
+# 提取 C1 的相互作用强度
+c1_interactions <- cellchat@net$weight["Hepato_c09", ]  # 获取 C1 到其他亚群的通信强度
+#c1_interactions <- cellchat@net$weight["T_4", ]  # 获取 C1 到其他亚群的通信强度
+
+c1_interactions
+#过滤####================================================================================
+mat <- cellchat@net$weight
+
+# 只用非零、非NA值计算阈值
+vals <- mat[is.finite(mat) & mat > 0]
+
+cutoff <- quantile(vals, 0.25)
+
+mat.filter <- mat
+mat.filter[!is.finite(mat.filter)] <- 0
+mat.filter[mat.filter < cutoff] <- 0
+
+# 删除全0行、全0列
+keep.row <- rowSums(mat.filter) > 0
+keep.col <- colSums(mat.filter) > 0
+
+mat.filter <- mat.filter[keep.row, keep.col, drop = FALSE]
+
+cellchat.filter <- cellchat
+cellchat.filter@net$weight <- mat.filter
+#过滤方法2####================================================================================
+mat <- cellchat@net$weight
+
+vals <- mat[is.finite(mat) & mat > 0]
+cutoff <- quantile(vals, 0.25)   # 可改成 0.5 更严格
+
+mat.filter <- mat
+mat.filter[!is.finite(mat.filter)] <- 0
+mat.filter[mat.filter < cutoff] <- 0
+
+cellchat.filter <- cellchat
+cellchat.filter@net$weight <- mat.filter
+
+netVisual_heatmap(
+  cellchat.filter,
+  measure = "weight",
+  color.heatmap = "RdPu",
+  cluster.row = FALSE,
+  cluster.col = FALSE
+)
+#####================================================================================
+netVisual_heatmap(cellchat, measure = "weight", color.heatmap = "Reds",cluster.row = TRUE, cluster.col = TRUE)
+#YlOrRd
+# 提取 C1 与其他亚群的相互作用
+
+c1_interactions_df <- data.frame(
+  Target = names(c1_interactions),
+  InteractionStrength = c1_interactions
+)
+
+# 排序并绘图
+library(ggplot2)
+ggplot(c1_interactions_df, aes(x = reorder(Target, -InteractionStrength), y = InteractionStrength)) +
+  geom_bar(stat = "identity", fill = "darkblue") +
+  labs(x = "Target Subclusters", y = "Interaction Strength", title = "Hepato_c09 interaction strength with TME subsets") +
+  theme_minimal() +
+  theme(panel.grid = element_blank(),
+        axis.text.x = element_text(angle = 45, hjust = 1))
