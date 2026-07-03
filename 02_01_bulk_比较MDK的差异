@@ -1,0 +1,108 @@
+library(ggplot2)
+library(ggpubr)
+library(dplyr)
+##数据准备###================================================================================
+count <- fread("RNA_TPM_matrix.csv", data.table = FALSE)
+count$GeneId<-NULL
+## 假设第一列是 gene id
+
+library(dplyr)
+
+## 重复基因保留表达counts最大的行
+count2 <- count %>%
+  mutate(total_count = rowSums(across(where(is.numeric)))) %>%
+  group_by(GeneSymbol) %>%
+  slice_max(order_by = total_count, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  as.data.frame()
+rownames(count2) <-count2$GeneSymbol
+##保留蛋白编码基因
+library("qs")
+gtf <- qread("Homo_sapiens_gtf")
+proteincoding <- gtf %>% filter(gene_biotype == "protein_coding")
+
+# 剔除 RPS/RPL 核糖体蛋白基因
+genes.use <- grep(
+  pattern = "^(RPS|RPL)",
+  x = rownames(count2),
+  value = TRUE,
+  invert = TRUE
+)
+
+# 再保留 protein coding genes
+genename_filt <- genes.use[genes.use %in% proteincoding$gene_name]
+
+# 过滤 count matrix
+count2_filt <- count2[genename_filt, ]
+count2_filt <- count2[rownames(count2) %in% genename_filt, ]
+count2_filt$GeneSymbol<-NULL
+
+## 3. 读取样本信息
+metadata <- read.csv("RNA_82sample_metadata.csv", row.names = 1)
+
+#####================================================================================
+gene_use <- "MDK"
+expr <-count2_filt
+expr$total_count<-NULL
+## 检查 Mcount## 检查 MDK 是否在表达矩阵中
+gene_use %in% rownames(expr)
+
+## 提取 MDK 表达
+plot_df <- data.frame(
+  Sample = colnames(expr),
+  MDK_expr = as.numeric(expr[gene_use, ]),
+  ORR_group = metadata[colnames(expr), "ORR_group"]
+)
+
+plot_df$ORR_group <- factor(
+  plot_df$ORR_group,
+  levels = c("Responder", "Non-responder")
+)
+
+## Wilcoxon 检验
+stat_res <- wilcox.test(
+  MDK_expr ~ ORR_group,
+  data = plot_df
+)
+
+stat_res$p.value
+
+## boxplot + jitter + 统计
+p <- ggplot(plot_df, aes(x = ORR_group, y = MDK_expr, fill = ORR_group)) +
+  geom_boxplot(
+    width = 0.55,
+    outlier.shape = NA,
+    alpha = 0.8
+  ) +
+  geom_jitter(
+    width = 0.15,
+    size = 2,
+    alpha = 0.8
+  ) +
+  stat_compare_means(
+    method = "wilcox.test",
+    comparisons = list(c("Responder", "Non-responder")),
+    label = "p.format"
+  ) +
+  labs(
+    x = "",
+    y = "MDK expression",
+    title = "MDK expression in bulk RNA-seq"
+  ) +
+  theme_classic() +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(size = 11),
+    axis.text.y = element_text(size = 10),
+    axis.title.y = element_text(size = 12),
+    plot.title = element_text(hjust = 0.5, size = 12)
+  )
+
+p
+
+ggsave(
+  "MDK_expression_boxplot_ORR_group.pdf",
+  plot = p,
+  width = 4,
+  height = 4.5
+)
