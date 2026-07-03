@@ -8,7 +8,7 @@
 ## 3. Hepato_c09 相关 LR pairs
 ## 4. Hepato_c09 相关 signaling pathways
 ############################################################
-
+# 路径：F:\HCC_ICB_project\T+A\NC_TME_h5ad\CellChat_Hepato_c09_niche
 library(Seurat)
 library(CellChat)
 library(dplyr)
