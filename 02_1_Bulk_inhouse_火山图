@@ -6,14 +6,8 @@ DEGs <- read.csv("DESeq2_DEG_results_v2.csv")
 gene_show <- c(
   "B9D1", "MAMSTR", "SCARA3", "FAM110B", "NR6A1",
   "DLK1", "ADGRD1", "GLUD2", "PEG3", "RELN", "CXCL9",
-  "IRF1",
-  "GBP1",
-  "BATF2","HLA-DRA",
-  "TAP1", "CD274",
-  "LAG3",
-  "CTLA4",
-  "GZMA"
-)
+  "IRF1","GBP1","BATF2","HLA-DRA","TAP1", "CD274",
+  "LAG3","CTLA4", "GZMA")
 
 ## 阈值
 fc_cutoff <- 0.5
@@ -56,7 +50,7 @@ volcano <- ggplot(DEGs, aes(log2FoldChange, neglog10_padj)) +
   ## 标签
   geom_text_repel(
     aes(label = label),
-    size = 3,
+    size = 5,
     fontface = "italic",
     box.padding = 0.4,
     point.padding = 0.3,
@@ -74,11 +68,11 @@ volcano <- ggplot(DEGs, aes(log2FoldChange, neglog10_padj)) +
   ) +
   
   labs(
-    x = expression(log[2]("Fold Change")),
-    y = expression(-log[10]("Adjusted P value"))
+    x = expression(log[2]~FC),
+    y = expression(-log[10]~"adjusted P value")
   ) +
   
-  theme_bw(base_size = 11) +
+  theme_bw(base_size = 16) +
   theme(
     legend.position = "none",
     panel.grid = element_blank(),
@@ -89,5 +83,5 @@ volcano
 
 ggsave("Volcano_plot.pdf",
        volcano,
-       width = 5,
-       height = 4.5)
+       width = 10,
+       height = 8)
