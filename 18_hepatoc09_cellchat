@@ -1,0 +1,652 @@
+############################################################
+## Hepato_c09-centered CellChat niche analysis
+## 目的：
+## 分析Hepato_c09 与微环境各类细胞亚群之间的互作特征
+## 包括：
+## 1. Hepato_c09 -> TME outgoing signaling
+## 2. TME -> Hepato_c09 incoming signaling
+## 3. Hepato_c09 相关 LR pairs
+## 4. Hepato_c09 相关 signaling pathways
+############################################################
+
+library(Seurat)
+library(CellChat)
+library(dplyr)
+library(qs)
+library(future)
+library(ggplot2)
+
+############################################################
+## 0. 参数设置
+############################################################
+
+target_group <- "Hepato_c09"
+getwd()
+outdir <- "CellChat_Hepato_c09_niche"
+dir.create(outdir, showWarnings = FALSE, recursive = TRUE)
+
+niche_labels <- c(
+  "Hepato_c09",
+  "Endo_c07",
+  "CD4T_c09",
+  "Endo_c05",
+  "CD8T_c05",
+  "Endo_c09",
+  "CD4T_c05",
+  "Mesen_c03",
+  "NK_c02",
+  "CD8T_c04",
+  "CD4T_c03",
+  "Mesen_c02",
+  "Endo_c02",
+  "CD4T_c07"
+)
+
+############################################################
+## 1. 合并 Seurat 对象
+############################################################
+
+merged_obj <- merge(
+  x = epi2,
+  y = list(endo, macro, tcell)
+)
+
+cat("Merged object cluster table:\n")
+print(table(merged_obj@meta.data$subcluster))
+
+############################################################
+## 2. 只保留 Hepato_c09 生态位相关亚群
+############################################################
+
+merg3 <- subset(
+  merged_obj,
+  subset = subcluster %in% niche_labels
+)
+
+merg3@meta.data$samples <- as.factor(merg3@meta.data$Patient_ID)
+
+cat("Niche subcluster table:\n")
+print(table(merg3@meta.data$subcluster))
+
+############################################################
+## 3. 提取 CellChat ligand-receptor genes
+############################################################
+
+CellChatDB <- CellChatDB.human
+interaction <- CellChatDB$interaction
+
+ligands <- unique(interaction$ligand)
+receptors <- unique(interaction$receptor)
+lr_genes <- unique(c(ligands, receptors))
+
+cat("Number of ligands:", length(ligands), "\n")
+cat("Number of receptors:", length(receptors), "\n")
+cat("Number of LR genes:", length(lr_genes), "\n")
+
+############################################################
+## 4. 基因过滤：蛋白编码 + 去核糖体 + LR genes
+############################################################
+
+gtf <- qread("E:\\shared_input\\Homo_sapiens_gtf")
+
+proteincoding <- gtf %>%
+  filter(gene_biotype == "protein_coding") %>%
+  pull(gene_name) %>%
+  unique()
+
+genes.use <- rownames(merg3)
+
+## 保留蛋白编码基因
+genes.use <- genes.use[genes.use %in% proteincoding]
+
+## 去除核糖体基因
+genes.use <- grep(
+  pattern = "^RP[SL][[:digit:]]|^RP[[:digit:]]|^RPSA",
+  genes.use,
+  value = TRUE,
+  invert = TRUE
+)
+
+## 只保留 CellChat LR genes
+genes.use <- genes.use[genes.use %in% lr_genes]
+
+merg3 <- subset(merg3, features = genes.use)
+
+## 去除表达细胞数过少的基因
+counts_mat <- GetAssayData(merg3, assay = "RNA", layer = "counts")
+
+genes.detected <- rownames(merg3)[rowSums(counts_mat > 0) >= 10]
+
+merg3 <- subset(merg3, features = genes.detected)
+
+cat("Final Seurat object dimension:\n")
+print(dim(merg3))
+
+############################################################
+## 5. 创建 CellChat 对象
+############################################################
+
+input <- GetAssayData(merg3, assay = "RNA", layer = "data")
+
+meta <- merg3@meta.data[, c("subcluster", "samples")]
+
+cellchat <- createCellChat(
+  object = input,
+  meta = meta,
+  group.by = "subcluster"
+)
+
+CellChatDB.use <- subsetDB(CellChatDB)
+
+cellchat@DB <- CellChatDB.use
+
+groupSize <- as.numeric(table(cellchat@idents))
+names(groupSize) <- names(table(cellchat@idents))
+
+############################################################
+## 6. CellChat 标准流程
+############################################################
+
+options(future.globals.maxSize = 4 * 1024^3)
+future::plan("multisession", workers = 16)
+
+cellchat <- subsetData(cellchat)
+
+cellchat <- identifyOverExpressedGenes(cellchat)
+
+cellchat <- identifyOverExpressedInteractions(cellchat)
+
+cellchat <- computeCommunProb(
+  cellchat,
+  nboot = 20
+)
+
+cellchat <- filterCommunication(
+  cellchat,
+  min.cells = 10
+)
+
+cellchat <- computeCommunProbPathway(cellchat)
+
+cellchat <- aggregateNet(cellchat)
+
+saveRDS(
+  cellchat,
+  file = file.path(outdir, "cellchat_Hepato_c09_niche.rds")
+)
+
+############################################################
+## 7. 全局 interaction overview
+############################################################
+
+pdf(file.path(outdir, "Global_interaction_count_weight.pdf"), width = 12, height = 6)
+
+par(mfrow = c(1, 2), xpd = TRUE)
+
+netVisual_circle(
+  cellchat@net$count,
+  vertex.weight = groupSize,
+  weight.scale = TRUE,
+  label.edge = FALSE,
+  title.name = "Number of interactions"
+)
+
+netVisual_circle(
+  cellchat@net$weight,
+  vertex.weight = groupSize,
+  weight.scale = TRUE,
+  label.edge = FALSE,
+  title.name = "Interaction strength"
+)
+
+dev.off()
+
+############################################################
+## 8. Hepato_c09 incoming + outgoing 总网络
+############################################################
+
+mat <- cellchat@net$weight
+
+mat_hepato <- matrix(
+  0,
+  nrow = nrow(mat),
+  ncol = ncol(mat),
+  dimnames = dimnames(mat)
+)
+
+mat_hepato[target_group, ] <- mat[target_group, ]
+mat_hepato[, target_group] <- mat[, target_group]
+
+group_names <- rownames(mat_hepato)
+
+color.use <- rep("grey80", length(group_names))
+names(color.use) <- group_names
+color.use[target_group] <- "#D55E00"
+
+pdf(file.path(outdir, "Hepato_c09_incoming_outgoing_circle.pdf"), width = 7, height = 7)
+
+netVisual_circle(
+  mat_hepato,
+  vertex.weight = groupSize,
+  weight.scale = TRUE,
+  label.edge = FALSE,
+  edge.width.max = 8,
+  vertex.size.max = 22,
+  color.use = color.use,
+  title.name = paste0(target_group, " incoming and outgoing interactions")
+)
+
+dev.off()
+
+############################################################
+## 9. Hepato_c09 outgoing network
+############################################################
+
+mat_out <- matrix(
+  0,
+  nrow = nrow(mat),
+  ncol = ncol(mat),
+  dimnames = dimnames(mat)
+)
+
+mat_out[target_group, ] <- mat[target_group, ]
+
+pdf(file.path(outdir, "Hepato_c09_outgoing_circle.pdf"), width = 7, height = 7)
+
+netVisual_circle(
+  mat_out,
+  vertex.weight = groupSize,
+  weight.scale = TRUE,
+  label.edge = FALSE,
+  edge.width.max = 8,
+  vertex.size.max = 20,
+  title.name = paste0(target_group, " outgoing interaction strength")
+)
+
+dev.off()
+
+############################################################
+## 10. TME -> Hepato_c09 incoming network
+############################################################
+
+mat_in <- matrix(
+  0,
+  nrow = nrow(mat),
+  ncol = ncol(mat),
+  dimnames = dimnames(mat)
+)
+
+mat_in[, target_group] <- mat[, target_group]
+
+pdf(file.path(outdir, "Hepato_c09_incoming_circle.pdf"), width = 7, height = 7)
+
+netVisual_circle(
+  mat_in,
+  vertex.weight = groupSize,
+  weight.scale = TRUE,
+  label.edge = FALSE,
+  edge.width.max = 8,
+  vertex.size.max = 20,
+  title.name = paste0(target_group, " incoming interaction strength")
+)
+
+dev.off()
+
+############################################################
+## 11. Top outgoing / incoming 细胞亚群表格
+############################################################
+
+outgoing_df <- data.frame(
+  target = names(mat[target_group, ]),
+  strength = as.numeric(mat[target_group, ])
+) %>%
+  filter(target != target_group) %>%
+  arrange(desc(strength))
+
+incoming_df <- data.frame(
+  source = names(mat[, target_group]),
+  strength = as.numeric(mat[, target_group])
+) %>%
+  filter(source != target_group) %>%
+  arrange(desc(strength))
+
+write.csv(
+  outgoing_df,
+  file.path(outdir, "Hepato_c09_outgoing_strength.csv"),
+  row.names = FALSE
+)
+
+write.csv(
+  incoming_df,
+  file.path(outdir, "Hepato_c09_incoming_strength.csv"),
+  row.names = FALSE
+)
+
+cat("Top Hepato_c09 outgoing targets:\n")
+print(head(outgoing_df, 10))
+
+cat("Top Hepato_c09 incoming sources:\n")
+print(head(incoming_df, 10))
+
+############################################################
+## 12. Top 5 outgoing circle
+############################################################
+
+top_n <- 5
+
+top_targets <- outgoing_df$target[1:min(top_n, nrow(outgoing_df))]
+
+mat_out_top <- matrix(
+  0,
+  nrow = nrow(mat),
+  ncol = ncol(mat),
+  dimnames = dimnames(mat)
+)
+
+mat_out_top[target_group, top_targets] <- mat[target_group, top_targets]
+
+pdf(file.path(outdir, "Hepato_c09_top5_outgoing_targets.pdf"), width = 7, height = 7)
+
+netVisual_circle(
+  mat_out_top,
+  vertex.weight = groupSize,
+  weight.scale = TRUE,
+  label.edge = FALSE,
+  edge.weight.max = max(mat_out_top),
+  edge.width.max = 8,
+  vertex.size.max = 20,
+  title.name = paste0(target_group, " top ", top_n, " outgoing targets")
+)
+
+dev.off()
+
+############################################################
+## 13. Top 5 incoming circle
+############################################################
+
+top_sources <- incoming_df$source[1:min(top_n, nrow(incoming_df))]
+
+mat_in_top <- matrix(
+  0,
+  nrow = nrow(mat),
+  ncol = ncol(mat),
+  dimnames = dimnames(mat)
+)
+
+mat_in_top[top_sources, target_group] <- mat[top_sources, target_group]
+
+pdf(file.path(outdir, "Hepato_c09_top5_incoming_sources.pdf"), width = 7, height = 7)
+
+netVisual_circle(
+  mat_in_top,
+  vertex.weight = groupSize,
+  weight.scale = TRUE,
+  label.edge = FALSE,
+  edge.weight.max = max(mat_in_top),
+  edge.width.max = 8,
+  vertex.size.max = 20,
+  title.name = paste0(target_group, " top ", top_n, " incoming sources")
+)
+
+dev.off()
+
+############################################################
+## 14. Bubble plot: Hepato_c09 -> TME
+############################################################
+
+pdf(file.path(outdir, "Bubble_Hepato_c09_to_TME.pdf"), width = 11, height = 7)
+
+netVisual_bubble(
+  cellchat,
+  sources.use = target_group,
+  targets.use = setdiff(levels(cellchat@idents), target_group),
+  remove.isolate = FALSE,
+  grid.on = FALSE
+)
+
+dev.off()
+
+############################################################
+## 15. Bubble plot: TME -> Hepato_c09
+############################################################
+
+pdf(file.path(outdir, "Bubble_TME_to_Hepato_c09.pdf"), width = 11, height = 9)
+
+netVisual_bubble(
+  cellchat,
+  sources.use = setdiff(levels(cellchat@idents), target_group),
+  targets.use = target_group,
+  remove.isolate = FALSE,
+  grid.on = FALSE
+)
+
+dev.off()
+
+############################################################
+## 16. 提取 Hepato_c09 相关 LR pairs
+############################################################
+
+df.net <- subsetCommunication(cellchat)
+
+hepato_out_lr <- df.net %>%
+  filter(source == target_group) %>%
+  arrange(desc(prob))
+
+hepato_in_lr <- df.net %>%
+  filter(target == target_group) %>%
+  arrange(desc(prob))
+
+write.csv(
+  hepato_out_lr,
+  file.path(outdir, "LR_pairs_Hepato_c09_outgoing.csv"),
+  row.names = FALSE
+)
+
+write.csv(
+  hepato_in_lr,
+  file.path(outdir, "LR_pairs_Hepato_c09_incoming.csv"),
+  row.names = FALSE
+)
+
+cat("Top Hepato_c09 outgoing LR pairs:\n")
+print(head(hepato_out_lr, 20))
+
+cat("Top Hepato_c09 incoming LR pairs:\n")
+print(head(hepato_in_lr, 20))
+
+############################################################
+## 17. 提取 Hepato_c09 相关 pathway communication
+############################################################
+
+df.pathway <- subsetCommunication(
+  cellchat,
+  slot.name = "netP"
+)
+
+hepato_out_pathway <- df.pathway %>%
+  filter(source == target_group) %>%
+  arrange(desc(prob))
+
+hepato_in_pathway <- df.pathway %>%
+  filter(target == target_group) %>%
+  arrange(desc(prob))
+
+write.csv(
+  hepato_out_pathway,
+  file.path(outdir, "Pathway_Hepato_c09_outgoing.csv"),
+  row.names = FALSE
+)
+
+write.csv(
+  hepato_in_pathway,
+  file.path(outdir, "Pathway_Hepato_c09_incoming.csv"),
+  row.names = FALSE
+)
+
+cat("Top Hepato_c09 outgoing pathways:\n")
+print(head(hepato_out_pathway, 20))
+
+cat("Top Hepato_c09 incoming pathways:\n")
+print(head(hepato_in_pathway, 20))
+
+############################################################
+## 18. Heatmap: 全部亚群互作强度
+############################################################
+
+pdf(file.path(outdir, "Heatmap_interaction_weight.pdf"), width = 8, height = 7)
+
+netVisual_heatmap(
+  cellchat,
+  measure = "weight",
+  color.heatmap = "Reds",
+  cluster.row = TRUE,
+  cluster.col = TRUE
+)
+
+dev.off()
+
+############################################################
+## 19. Centrality analysis
+############################################################
+
+cellchat <- netAnalysis_computeCentrality(
+  cellchat,
+  slot.name = "netP"
+)
+
+pdf(file.path(outdir, "Signaling_role_heatmap_outgoing.pdf"), width = 8, height = 10)
+##全部通路###================================================================================
+ht1 <- netAnalysis_signalingRole_heatmap(
+  cellchat,
+  pattern = "outgoing"
+)
+
+ht1@heatmap_param$width  <- unit(12, "cm")
+ht1@heatmap_param$height <- unit(18, "cm")
+
+library(ComplexHeatmap)
+draw(ht1)
+
+dev.off()
+##只保留Hepato_c09 outgoing有通信概率的通路###================================================================================
+df.pathway <- subsetCommunication(
+  cellchat,
+  slot.name = "netP"
+)
+
+hepato_out_pathway <- df.pathway %>%
+  filter(source == target_group) %>%
+  group_by(pathway_name) %>%
+  summarise(total_prob = sum(prob, na.rm = TRUE)) %>%
+  arrange(desc(total_prob))
+
+pathways.use <- hepato_out_pathway %>%
+  filter(total_prob > 0) %>%
+  slice_head(n = 20) %>%
+  pull(pathway_name)
+
+ht1 <- netAnalysis_signalingRole_heatmap(
+  cellchat,
+  pattern = "outgoing",
+  signaling = pathways.use
+)
+
+ht1@heatmap_param$width  <- unit(8, "cm")
+ht1@heatmap_param$height <- unit(10, "cm")
+
+pdf(file.path(outdir, "Signaling_role_heatmap_outgoing_Hepato_c09_related.pdf"),
+    width = 8, height = 10)
+
+draw(ht1)
+
+dev.off()
+
+#####================================================================================
+pdf(file.path(outdir, "Signaling_role_heatmap_incoming.pdf"), width = 8, height = 6)
+
+ht2 <- netAnalysis_signalingRole_heatmap(
+  cellchat,
+  pattern = "incoming"
+)
+
+draw(ht2)
+
+dev.off()
+#####================================================================================
+## 提取 pathway-level communication
+df.pathway <- subsetCommunication(
+  cellchat,
+  slot.name = "netP"
+)
+
+## 只保留 incoming (TME -> Hepato_c09)
+hepato_in_pathway <- df.pathway %>%
+  filter(target == target_group) %>%
+  group_by(pathway_name) %>%
+  summarise(total_prob = sum(prob, na.rm = TRUE)) %>%
+  arrange(desc(total_prob))
+
+## Top 20 pathway
+pathways.use <- hepato_in_pathway %>%
+  filter(total_prob > 0) %>%
+  slice_head(n = 20) %>%
+  pull(pathway_name)
+
+## 绘图
+pdf(
+  file.path(outdir, paste0("Signaling_role_heatmap_incoming_top", 20, ".pdf")),
+  width = 8,
+  height = 10
+)
+
+ht2 <- netAnalysis_signalingRole_heatmap(
+  cellchat,
+  pattern = "incoming",
+  signaling = pathways.use
+)
+
+ht2@heatmap_param$width  <- unit(8, "cm")
+ht2@heatmap_param$height <- unit(10, "cm")
+
+draw(ht2)
+
+dev.off()
+#####================================================================================
+pdf(file.path(outdir, "Signaling_role_scatter.pdf"), width = 7, height = 6)
+
+gg1 <- netAnalysis_signalingRole_scatter(cellchat)
+print(gg1)
+
+dev.off()
+
+############################################################
+## 20. 保存最终对象
+############################################################
+
+saveRDS(
+  cellchat,
+  file = file.path(outdir, "cellchat_Hepato_c09_niche_final.rds")
+)
+
+cat("Analysis finished.\n")
+cat("Results saved in:", outdir, "\n")
+
+############################################################
+## 解读重点：
+##
+## 1. Hepato_c09_outgoing_strength.csv
+##    看 Hepato_c09 主要影响哪些微环境亚群。
+##
+## 2. Hepato_c09_incoming_strength.csv
+##    看哪些微环境亚群最可能塑造 Hepato_c09 状态。
+##
+## 3. LR_pairs_Hepato_c09_outgoing.csv
+##    看 Hepato_c09 主动释放哪些 ligand，并作用于哪些 receptor。
+##
+## 4. LR_pairs_Hepato_c09_incoming.csv
+##    看微环境中哪些 ligand 作用于 Hepato_c09。
+##
+## 5. Pathway_Hepato_c09_outgoing.csv / incoming.csv
+##    看通路层面是否集中在 CCL、CXCL、MIF、VEGF、ANGPT、
+##    TGFb、GALECTIN、COLLAGEN、LAMININ 等生态位通路。
+############################################################
