@@ -1,0 +1,53 @@
+library(data.table)
+
+# 文件夹
+path <- "G:/HCC_靶免治疗/HCC免疫治疗bulk集合/TPM_清洗后"
+
+# 获取所有csv文件
+files <- list.files(
+  path = path,
+  pattern = "\\.csv$",
+  full.names = TRUE
+)
+
+# 按文件名排序（避免顺序混乱）
+files <- sort(files)
+
+# 批量读取
+tpm_list <- lapply(files, function(x) {
+  read.csv(x, row.names = 1, check.names = FALSE)
+})
+
+# 命名
+names(tpm_list) <- paste0("tpm", seq_along(tpm_list))
+
+# 分别生成 tpm1 ~ tpm6
+list2env(tpm_list, envir = .GlobalEnv)
+
+
+common_genes <- Reduce(intersect, lapply(tpm_list, rownames))
+length(common_genes)   # 看一下共有多少个基因
+
+# 按共同基因重新排序
+tpm_list2 <- lapply(tpm_list, function(x) {
+  x[common_genes, , drop = FALSE]
+})
+names(tpm_list2) <- NULL
+# 合并
+tpm_merge <- do.call(cbind, tpm_list2)
+colnames(tpm_merge) <- gsub("^SAMPLE\\.", "SAMPLE_", colnames(tpm_merge))
+
+metadata<-read.csv("Total_metadata.csv") 
+metadata$sample <- sub("^SAMPLE-", "SAMPLE_", metadata$sample)
+metadata$ORR[metadata$ORR == "Non-responder"] <- "Non_responder"
+write.csv(metadata,"Total_metadata.csv") 
+write.csv(tpm_merge,"HCC_ICB_altas_total(包含索拉菲尼).csv") 
+
+common_samples <- intersect(metadata$sample, colnames(tpm_merge))
+setdiff(colnames(tpm_merge), metadata$sample)
+
+
+keep_samples <- intersect(metadata$sample, colnames(tpm_merge))
+
+tpm_merge2 <- tpm_merge[, keep_samples, drop = FALSE]
+write.csv(tpm_merge2,"HCC_ICB_altas.csv") 
