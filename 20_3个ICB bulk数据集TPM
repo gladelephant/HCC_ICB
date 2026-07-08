@@ -1,0 +1,130 @@
+#01. GSE181946转TPM#####################################
+library(readxl)
+df <- read_excel("GSE181946_count_HCC免疫治疗.xlsx")
+View(df)
+library(org.Hs.eg.db)
+install.packages(
+  "org.Hs.eg.db_3.23.1.tar.gz",
+  repos = NULL,
+  type = "source"
+)
+
+df$GeneSymbol <- mapIds(
+  org.Hs.eg.db,
+  keys = df$Tag,
+  column = "SYMBOL",
+  keytype = "ENSEMBL",
+  multiVals = "first"
+)
+
+count <- df
+
+count$Tag <-NULL
+## 假设第一列是 gene id
+## 重复基因保留表达counts最大的行
+count2 <- count %>%
+  mutate(total_count = rowSums(across(where(is.numeric)))) %>%
+  group_by(GeneSymbol) %>%
+  slice_max(order_by = total_count, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  as.data.frame()
+count2 <- count2[!is.na(count2$GeneSymbol), ]
+rownames(count2) <-count2$GeneSymbol
+count2$total_count<-NULL
+count2$GeneSymbol<-NULL
+
+expMatrix = count2
+####================================================================================
+eff_length_unique<-read_rds("G:\\HCC_靶免治疗\\HCC免疫治疗bulk集合\\gene_length.rds")
+#转录本长度加载到count矩阵中
+expMatrix$gene_symbol <- row.names(expMatrix)
+matched_indices <- match(expMatrix$gene_symbol, eff_length_unique$gene_symbol)
+expMatrix$length <- eff_length_unique$eff_length[matched_indices]
+expMatrix_clean <- expMatrix[!is.na(expMatrix$length), ]
+# counts:转录组的count矩阵，行为基因，列为样本
+# effLen：一个数值型向量，值是基因长度，顺序应该与count的列一致对应
+Counts2TPM <- function(counts, effLen){
+  rate <- log(counts) - log(effLen)
+  denom <- log(sum(exp(rate)))
+  exp(rate - denom + log(1e6))
+}
+
+effLen = expMatrix_clean$length
+colnames(expMatrix_clean)
+expMatrix_clean$length<-NULL
+expMatrix_clean$gene_symbol<-NULL
+trans_tpm2 <- apply(expMatrix_clean, 2, Counts2TPM, effLen = effLen)
+range(trans_tpm2)
+colSums(trans_tpm2)
+write.csv(trans_tpm2,"G:\\HCC_靶免治疗\\HCC免疫治疗bulk集合\\TPM_清洗后\\GSE181946_17例_RNA_TPM_matrix.csv")
+#02. GSE202069 TPM####================================================================================
+data_dir <- x
+expr_file <- file.path(data_dir, "GSE202069_gene_tpm_expression.txt")
+meta_file <- file.path(data_dir, "GSE202069_metadata.csv")
+gtf_file  <- "G:/HCC_靶免治疗/bulk_in_house/Homo_sapiens_gtf"
+
+out_dir <- file.path(data_dir, "DEG_limma_results")
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+
+## 3. Read expression matrix and metadata ----------------------------------
+
+## Expression values were provided as log2(TPM + 1) by the original authors
+expr <- read.table(
+  expr_file,
+  row.names = 1,
+  header = TRUE,
+  sep = "\t",
+  check.names = FALSE
+)
+metadata <- read.csv(
+  meta_file,
+  header = TRUE,
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+
+stopifnot(all(c("sample", "response") %in% colnames(metadata)))
+
+rownames(metadata) <- metadata$sample
+
+## Keep only samples present in both expression matrix and metadata
+common_samples <- intersect(colnames(expr), metadata$sample)
+
+expr <- expr[, common_samples, drop = FALSE]
+colSums(expr)
+range(expr)
+
+expr_tpm <- 2^expr - 1
+colSums(expr_tpm)
+range(expr_tpm)
+write.csv(expr_tpm,"G:\\HCC_靶免治疗\\HCC免疫治疗bulk集合\\TPM_清洗后\\GSE202069_17例_RNA_TPM_matrix.csv")
+#03. GSE215011 TPM####================================================================================
+matrix<-fread("GSE215011_gene_description_human_samples.txt")
+## 重复基因保留表达counts最大的行
+count2 <- matrix %>%
+  mutate(total_count = rowSums(across(where(is.numeric)))) %>%
+  group_by(gene_name) %>%
+  slice_max(order_by = total_count, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  as.data.frame()
+rownames(count2) <-count2$gene_name
+
+count2 <- count2[, c(
+  "A12_949T",
+  "A16_557T",
+  "A17_152T",
+  "A19_16T",
+  "A19_171T",
+  "A11_385T",
+  "A18_440T",
+  "A19_1T",
+  "A19_121T",
+  "A19_174T"
+)]
+
+
+FPKM2TPM <- function(fpkm){
+  t(t(fpkm) / colSums(fpkm)) * 1e6
+}
+tpm <- FPKM2TPM(count2)
+write.csv(tpm,"G:\\HCC_靶免治疗\\HCC免疫治疗bulk集合\\TPM_清洗后\\GSE215011_10例_RNA_TPM_matrix.csv")
