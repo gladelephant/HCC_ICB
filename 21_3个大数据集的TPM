@@ -1,0 +1,95 @@
+rm(list = ls())
+rm(list = setdiff(ls(), c("df1","df2","df4")))
+getwd()
+options(stringsAsFactors = F)
+library(parallel)
+cl=makeCluster(0.75*detectCores())
+library(GenomicFeatures)
+library(txdbmaker)
+library(GenomicRanges)
+library(tidyverse)
+library(dplyr)
+library("qs")
+library(readxl)
+#####================================================================================
+check_expr <- function(x, name){
+  cat("==========", name, "==========\n")
+  print(summary(as.numeric(x)))
+  cat("Min:", min(x, na.rm=TRUE), "\n")
+  cat("Max:", max(x, na.rm=TRUE), "\n")
+  cat("Mean:", mean(as.numeric(x), na.rm=TRUE), "\n")
+  cat("95%:", quantile(as.numeric(x), 0.95, na.rm=TRUE), "\n")
+  cat("99%:", quantile(as.numeric(x), 0.99, na.rm=TRUE), "\n\n")
+}
+
+colSums(df1)
+colSums(df2)
+colSums(df4)
+#01.Inhouse 82例TPM数据的处理####==================================================== 
+df1<-read.csv("Inhouse_82例_RNA_TPM_matrix.csv",row.names = 1)
+count <- df1
+count2 <- count %>%
+  mutate(total_count = rowSums(across(where(is.numeric)))) %>%
+  group_by(GeneSymbol) %>%
+  slice_max(order_by = total_count, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  as.data.frame()
+rownames(count2) <-count2$GeneSymbol
+count2 <- count2[count2$Gene != "-", ]
+count2$GeneSymbol<-NULL
+count2$total_count<-NULL
+write.csv(count2,"./TPM_清洗后/Inhouse_82例_RNA_TPM_matrix.csv")
+df1<-count2
+#02.Inhouse 35例ICB病例####============================================================= 
+library(data.table)
+count <- fread("Inhouse_35例_RNA_count_matrix.csv", data.table = FALSE)
+count$GeneId<-NULL
+## 重复基因保留表达counts最大的行
+count2 <- count %>%
+  mutate(total_count = rowSums(across(where(is.numeric)))) %>%
+  group_by(Gene) %>%
+  slice_max(order_by = total_count, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  as.data.frame()
+rownames(count2) <-count2$Gene
+count2<-as.data.frame(count2)
+count2$Gene<-NULL
+count2 <- count2[, !grepl("_TPM", colnames(count2)), drop = FALSE]
+colnames(count2) <- gsub("_count", "", colnames(count2))
+count2$total<-NULL
+#####================================================================================
+expMatrix = count2
+####================================================================================
+eff_length_unique<-read_rds("gene_length.rds")
+#转录本长度加载到count矩阵中
+expMatrix$gene_symbol <- row.names(expMatrix)
+matched_indices <- match(expMatrix$gene_symbol, eff_length_unique$gene_symbol)
+expMatrix$length <- eff_length_unique$eff_length[matched_indices]
+expMatrix_clean <- expMatrix[!is.na(expMatrix$length), ]
+# counts:转录组的count矩阵，行为基因，列为样本
+# effLen：一个数值型向量，值是基因长度，顺序应该与count的列一致对应
+Counts2TPM <- function(counts, effLen){
+  rate <- log(counts) - log(effLen)
+  denom <- log(sum(exp(rate)))
+  exp(rate - denom + log(1e6))
+}
+
+effLen = expMatrix_clean$length
+colnames(expMatrix_clean)
+expMatrix_clean$length<-NULL
+expMatrix_clean$gene_symbol<-NULL
+trans_tpm2 <- apply(expMatrix_clean, 2, Counts2TPM, effLen = effLen)
+range(trans_tpm2)
+colSums(trans_tpm2)
+write.csv(trans_tpm2,"./TPM_清洗后/Inhouse_35例_RNA_TPM_matrix.csv")
+df2<-trans_tpm2
+df2<-as.data.frame(df2)
+#03.Imbrave150####================================================================================
+df4<- read.csv("Imbrave150_tximport_gene_TPM_matrix.csv",row.names = 1)
+count2 <- df4
+count2$GeneSymbol<-NULL
+count2$total_count<-NULL
+range(count2)
+colSums(count2)
+write.csv(count2,"./TPM_清洗后/Imbrave150_tximport_gene_TPM_matrix.csv")
+df4<-count2_filt
