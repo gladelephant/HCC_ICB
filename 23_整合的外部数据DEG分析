@@ -1,0 +1,111 @@
+library(data.table)
+
+# 文件夹
+path <- "G:/HCC_靶免治疗/HCC免疫治疗bulk集合/TPM_清洗后"
+
+# 获取所有csv文件
+files <- list.files(
+  path = path,
+  pattern = "\\.csv$",
+  full.names = TRUE
+)
+
+# 按文件名排序（避免顺序混乱）
+files <- sort(files)
+
+# 批量读取
+tpm_list <- lapply(files, function(x) {
+  read.csv(x, row.names = 1, check.names = FALSE)
+})
+
+# 命名
+names(tpm_list) <- paste0("tpm", seq_along(tpm_list))
+
+# 分别生成 tpm1 ~ tpm6
+list2env(tpm_list, envir = .GlobalEnv)
+
+
+common_genes <- Reduce(intersect, lapply(tpm_list, rownames))
+length(common_genes)   # 看一下共有多少个基因
+
+# 按共同基因重新排序
+tpm_list2 <- lapply(tpm_list, function(x) {
+  x[common_genes, , drop = FALSE]
+})
+names(tpm_list2) <- NULL
+# 合并
+tpm_merge <- do.call(cbind, tpm_list2)
+colnames(tpm_merge) <- gsub("^SAMPLE\\.", "SAMPLE_", colnames(tpm_merge))
+
+metadata<-read.csv("Total_metadata.csv") 
+metadata$sample <- sub("^SAMPLE-", "SAMPLE_", metadata$sample)
+metadata$ORR[metadata$ORR == "Non-responder"] <- "Non_responder"
+write.csv(metadata,"Total_metadata.csv") 
+write.csv(tpm_merge,"HCC_ICB_altas_total(包含索拉菲尼).csv") 
+
+common_samples <- intersect(metadata$sample, colnames(tpm_merge))
+setdiff(colnames(tpm_merge), metadata$sample)
+
+
+keep_samples <- intersect(metadata$sample, colnames(tpm_merge))
+
+tpm_merge2 <- tpm_merge[, keep_samples, drop = FALSE]
+write.csv(tpm_merge2,"HCC_ICB_altas.csv") 
+#####===================================================================================
+metadata2 <- metadata[metadata$Dataset != "EHBH_cohort_01", ]
+keep_samples <- intersect(metadata2$sample, colnames(tpm_merge))
+tpm_merge3 <- tpm_merge2[, keep_samples, drop = FALSE]
+#####===================================================================================
+tpm_merge3_log2 <- log2(tpm_merge3 + 1)
+range(tpm_merge3_log2)
+expr.dat <- tpm_merge3_log2
+#使用刘小乐教授RIMA教程的方法
+###filtering out genes with low variance among samples
+CVFILTER <- 0
+mean_nolym <- apply(expr.dat,1,mean) #计算每一行的平均值
+var_nolym <- apply(expr.dat,1,var) ##计算每一行的方差
+cv_nolym <- abs(var_nolym/mean_nolym) #计算了每一行的变异系数（CV），方法是取方差除以平均值的绝对值
+filt_genes <- subset(cv_nolym, cv_nolym > CVFILTER)
+## Select those genes that pass variance filtering
+exprZero <- expr.dat
+expr.dat <- expr.dat[rownames(expr.dat) %in% names(filt_genes),] #14378基因
+exprZero <- subset(exprZero, !(rownames(exprZero) %in% names(filt_genes)))
+#####===================================================================================
+library("qs")
+gtf <- qread("G:\\HCC_靶免治疗\\bulk_in_house\\Homo_sapiens_gtf")
+proteincoding <- gtf %>% filter(gene_biotype == "protein_coding")
+# 剔除 RPS/RPL 核糖体蛋白基因
+genes.use <- grep(
+  pattern = "^(RPS|RPL)",
+  x = row.names(tpm_merge3_log2),
+  value = TRUE,
+  invert = TRUE
+)
+
+# 再保留 protein coding genes
+genename_filt <- genes.use[genes.use %in% proteincoding$gene_name]
+keep_genes <- intersect(genename_filt, rownames(tpm_merge3_log2))
+tpm_merge3_log2 <- tpm_merge3_log2[keep_genes, , drop = FALSE]
+write.csv(tpm_merge3_log2,"HCC_ICB_altas_370validation.csv") 
+write.csv(metadata2,"metadata2_370validation.csv") 
+###=======================================================================================
+metadata2$ORR <- factor(metadata2$ORR,
+                             levels = c("Non_responder", "Responder")) #第一个level是基线 
+metadata2$Dataset <- droplevels(factor(metadata2$Dataset))
+table(metadata2$Dataset, metadata2$ORR)
+library(limma)
+design <- model.matrix(~ Dataset+ORR, data = metadata2)
+merged <- tpm_merge3_log2
+fit <- lmFit(merged, design)
+fit <- eBayes(fit)
+deg <- topTable(
+  fit,
+  coef = "ORRResponder",
+  number = Inf
+)  
+
+deg_sig <- deg %>%
+  filter(adj.P.Val < 0.05)
+
+deg_sig$Gene<-row.names(deg_sig)
+write.csv(deg_sig,"deg_sig_校正Dataset.csv")
