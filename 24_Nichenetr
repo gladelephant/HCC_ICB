@@ -1,0 +1,533 @@
+############################################################
+## NicheNet / CellChat-like outgoing analysis
+## sender   = Hepato_c09
+## receiver = TME subclusters
+## DEG      = Hepato_c09 vs other hepatocytes upregulated genes
+############################################################
+rm(list = setdiff(ls(), c("")))
+library(Seurat)
+library(tidyverse)
+library(nichenetr)
+library(ggplot2)
+library("schard")
+library(nichenetr)
+library(dplyr)
+library(tibble)
+library(scCustomize)
+#####================================================================================
+rm(list = setdiff(ls(), c("scobj","epi","deg")))
+scobj = schard::h5ad2seurat('total_subclusters.h5ad',use.raw=T)
+table(scobj@meta.data$celltype)
+epi <- subset(scobj, celltype %in% c("Epithelial"))
+epi <- NormalizeData(epi, normalization.method = 'LogNormalize', scale.factor = 10000)
+Idents(epi) <- "subcluster"
+table(epi@meta.data$subcluster)
+deg <- FindMarkers(
+  object = epi,
+  ident.1 = "Hepato_c09",
+  ident.2 = setdiff(unique(epi$subcluster), "Hepato_c09"),
+  assay = "RNA",
+  only.pos = TRUE,
+  slot = "data",
+  min.pct = 0.25,
+  logfc.threshold = 1
+) %>%
+  rownames_to_column("gene") %>%
+  Add_Pct_Diff() %>%
+  arrange(desc(avg_log2FC))
+
+head(deg)
+#####================================================================================
+outdir <- "NicheNet_Hepato_c09_outgoing"
+dir.create(outdir, showWarnings = FALSE, recursive = TRUE)
+
+############################################################
+## 1. 读取 NicheNet 网络
+############################################################
+getwd()
+lr_network <- readRDS("D:/nichenet/nichent-human-network/lr_network_human_21122021.rds")
+ligand_target_matrix <- readRDS("D:/nichenet/nichent-human-network/ligand_target_matrix_nsga2r_final.rds")
+weighted_networks <- readRDS("D:/nichenet/nichent-human-network/weighted_networks_nsga2r_final.rds")
+lr_network <- lr_network %>% distinct(from, to)
+
+############################################################
+## 2. 设置 sender / receiver
+############################################################
+
+sender <- "Hepato_c09"
+
+niche_labels <- c(
+  "Hepato_c09",
+  "Endo_c07",
+  "CD4T_c09",
+  "Endo_c05",
+  "CD8T_c05",
+  "Endo_c09",
+  "CD4T_c05",
+  "Mesen_c03",
+  "NK_c02",
+  "CD8T_c04",
+  "CD4T_c03",
+  "Mesen_c02",
+  "Endo_c02",
+  "CD4T_c07"
+)
+
+receiver_celltypes <- setdiff(niche_labels, sender)
+
+############################################################
+## 3. subset Seurat object
+############################################################
+
+sce <- subset(
+  scobj,
+  subset = subcluster %in% niche_labels
+)
+sce <- NormalizeData(sce, normalization.method = 'LogNormalize', scale.factor = 10000)
+
+Idents(sce) <- "subcluster"
+
+print(table(sce$subcluster))
+
+############################################################
+## 4. 读取 Hepato_c09 上调 DEG
+############################################################
+## DEG.csv 至少包含 gene, p_val_adj, avg_log2FC
+############################################################
+
+# deg <- read.csv("DEG.csv")
+# 
+# geneset_oi <- deg %>%
+#   filter(p_val_adj <= 0.05, avg_log2FC >= 0.25) %>%
+#   pull(gene) %>%
+#   unique()
+geneset_oi<-deg$gene
+cat("Hepato_c09 upregulated genes:", length(deg$gene), "\n")
+
+############################################################
+## 5. 提取 Hepato_c09 表达基因
+############################################################
+
+expressed_genes_sender <- get_expressed_genes(
+  sender,
+  sce,
+  pct = 0.1
+)
+
+all_ligands <- unique(lr_network$from)
+
+expressed_ligands_sender <- intersect(
+  all_ligands,
+  expressed_genes_sender
+)
+
+############################################################
+## 6. Hepato_c09 DEG 中的 ligand
+############################################################
+
+deg_ligands_sender <- intersect(
+  geneset_oi,
+  expressed_ligands_sender
+)
+
+cat("Upregulated ligands in Hepato_c09:", length(deg_ligands_sender), "\n")
+print(deg_ligands_sender)
+
+write.csv(
+  data.frame(ligand = deg_ligands_sender),
+  file.path(outdir, "Hepato_c09_upregulated_expressed_ligands.csv"),
+  row.names = FALSE
+)
+
+############################################################
+## 7. 计算每个 receiver 的 expressed receptors
+############################################################
+
+all_receptors <- unique(lr_network$to)
+
+receiver_receptor_list <- receiver_celltypes %>%
+  set_names() %>%
+  lapply(function(receiver_i) {
+    expressed_genes_receiver_i <- get_expressed_genes(
+      receiver_i,
+      sce,
+      pct = 0.1
+    )
+    intersect(all_receptors, expressed_genes_receiver_i)
+  })
+
+############################################################
+## 8. 构建 Hepato_c09 ligand -> TME receptor 网络
+############################################################
+
+lr_outgoing_df <- receiver_celltypes %>%
+  lapply(function(receiver_i) {
+    
+    expressed_receptors_i <- receiver_receptor_list[[receiver_i]]
+    
+    lr_network %>%
+      filter(
+        from %in% deg_ligands_sender,
+        to %in% expressed_receptors_i
+      ) %>%
+      mutate(
+        sender = sender,
+        receiver = receiver_i
+      )
+  }) %>%
+  bind_rows()
+
+lr_outgoing_df <- lr_outgoing_df %>%
+  select(sender, receiver, ligand = from, receptor = to) %>%
+  distinct()
+
+
+write.csv(
+  lr_outgoing_df,
+  file.path(outdir, "Hepato_c09_outgoing_ligand_receptor_pairs.csv"),
+  row.names = FALSE
+)
+
+head(lr_outgoing_df)
+
+############################################################
+## 9. 加入 ligand expression 和 DEG logFC
+############################################################
+
+avg_expr <- AverageExpression(
+  sce,
+  features = unique(c(lr_outgoing_df$ligand, lr_outgoing_df$receptor)),
+  group.by = "subcluster",
+  assays = "RNA",
+  slot = "data"
+)$RNA
+
+colnames(avg_expr) <- gsub("\\-", "_", colnames(avg_expr))
+colnames(avg_expr)
+
+ligand_expr <- avg_expr[
+  intersect(lr_outgoing_df$ligand, rownames(avg_expr)),
+  sender,
+  drop = FALSE
+] %>%
+  as.data.frame() %>%
+  rownames_to_column("ligand") %>%
+  rename(ligand_avg_expr_sender = !!sender)
+
+receptor_expr_long <- avg_expr[
+  intersect(lr_outgoing_df$receptor, rownames(avg_expr)),
+  receiver_celltypes,
+  drop = FALSE
+] %>%
+  as.data.frame() %>%
+  rownames_to_column("receptor") %>%
+  pivot_longer(
+    cols = -receptor,
+    names_to = "receiver",
+    values_to = "receptor_avg_expr_receiver"
+  )
+
+deg_info <- deg %>%
+  select(gene, avg_log2FC, p_val_adj) %>%
+  rename(
+    ligand = gene,
+    ligand_logFC = avg_log2FC,
+    ligand_padj = p_val_adj
+  )
+
+lr_outgoing_df2 <- lr_outgoing_df %>%
+  left_join(ligand_expr, by = "ligand") %>%
+  left_join(receptor_expr_long, by = c("receiver", "receptor")) %>%
+  left_join(deg_info, by = "ligand") %>%
+  mutate(
+    interaction_score = ligand_avg_expr_sender *
+      receptor_avg_expr_receiver *
+      pmax(ligand_logFC, 0)
+  ) %>%
+  arrange(desc(interaction_score))
+
+write.csv(
+  lr_outgoing_df2,
+  file.path(outdir, "Hepato_c09_outgoing_LR_with_scores.csv"),
+  row.names = FALSE
+)
+
+head(lr_outgoing_df2, 30)
+
+############################################################
+## 10. 每个 receiver 的 outgoing strength
+############################################################
+
+receiver_strength <- lr_outgoing_df2 %>%
+  group_by(receiver) %>%
+  summarise(
+    n_ligands = n_distinct(ligand),
+    n_receptors = n_distinct(receptor),
+    n_lr_pairs = n(),
+    total_score = sum(interaction_score, na.rm = TRUE),
+    mean_score = mean(interaction_score, na.rm = TRUE)
+  ) %>%
+  arrange(desc(total_score))
+
+write.csv(
+  receiver_strength,
+  file.path(outdir, "Hepato_c09_outgoing_receiver_strength.csv"),
+  row.names = FALSE
+)
+
+p1 <- ggplot(receiver_strength, aes(x = reorder(receiver, total_score), y = total_score)) +
+  geom_col(fill = "darkorange") +
+  coord_flip() +
+  theme_classic() +
+  labs(
+    x = "Receiver TME subcluster",
+    y = "Outgoing interaction score",
+    title = "Hepato_c09 outgoing communication to TME"
+  )
+
+ggsave(
+  file.path(outdir, "Hepato_c09_outgoing_receiver_strength.pdf"),
+  plot = p1,
+  width = 8,
+  height = 6,
+  dpi = 600,
+  device = cairo_pdf
+)
+
+############################################################
+## 11. ligand x receiver heatmap
+############################################################
+
+ligand_receiver_mat <- lr_outgoing_df2 %>%
+  group_by(ligand, receiver) %>%
+  summarise(score = sum(interaction_score, na.rm = TRUE), .groups = "drop") %>%
+  pivot_wider(
+    names_from = receiver,
+    values_from = score,
+    values_fill = 0
+  ) %>%
+  column_to_rownames("ligand") %>%
+  as.matrix()
+
+ligand_receiver_mat <- ligand_receiver_mat[
+  order(rowSums(ligand_receiver_mat), decreasing = TRUE),
+  ,
+  drop = FALSE
+]
+
+top_ligands_plot <- rownames(ligand_receiver_mat)[1:min(30, nrow(ligand_receiver_mat))]
+
+p2 <- make_heatmap_ggplot(
+  ligand_receiver_mat[top_ligands_plot, , drop = FALSE],
+  x_name = "Receiver TME subclusters",
+  y_name = "Hepato_c09 upregulated ligands",
+  color = "darkorange",
+  legend_title = "Outgoing score"
+) +
+  theme(
+    axis.text.x = element_text(size = 7, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 6)
+  )
+
+ggsave(
+  file.path(outdir, "Hepato_c09_ligand_receiver_heatmap.pdf"),
+  plot = p2,
+  width = 18,
+  height = 14,
+  units = "cm",
+  dpi = 600,
+  device = cairo_pdf
+)
+
+############################################################
+## 12. ligand-receptor heatmap
+############################################################
+
+top_ligands <- names(sort(rowSums(ligand_receiver_mat), decreasing = TRUE))[1:min(30, nrow(ligand_receiver_mat))]
+
+lr_top <- lr_outgoing_df2 %>%
+  filter(ligand %in% top_ligands)
+
+ligand_receptor_links_df <- get_weighted_ligand_receptor_links(
+  top_ligands,
+  unique(lr_top$receptor),
+  lr_network,
+  weighted_networks$lr_sig
+)
+
+vis_ligand_receptor_network <- prepare_ligand_receptor_visualization(
+  ligand_receptor_links_df,
+  top_ligands,
+  order_hclust = "both"
+)
+
+p3 <- make_heatmap_ggplot(
+  t(vis_ligand_receptor_network),
+  y_name = "Ligands from Hepato_c09",
+  x_name = "Receptors on TME",
+  color = "mediumvioletred",
+  legend_title = "Prior interaction potential"
+) +
+  theme(
+    axis.text.x = element_text(size = 6, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 6)
+  )
+
+ggsave(
+  file.path(outdir, "Hepato_c09_outgoing_ligand_receptor_heatmap.pdf"),
+  plot = p3,
+  width = 18,
+  height = 14,
+  units = "cm",
+  dpi = 600,
+  device = cairo_pdf
+)
+
+############################################################
+## 13. receptor x receiver heatmap
+## 看 Hepato_c09 outgoing 相关 receptor 在哪些 receiver 亚群高表达
+############################################################
+## 取 top receptor，避免图太挤
+top_receptor_n <- 40
+
+top_receptors <- lr_outgoing_df2 %>%
+  group_by(receptor) %>%
+  summarise(
+    total_score = sum(interaction_score, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(total_score)) %>%
+  slice_head(n = top_receptor_n) %>%
+  pull(receptor)
+
+## 从 avg_expr 中提取 receptor 在 receiver 亚群中的表达
+receptor_receiver_mat <- avg_expr[
+  intersect(top_receptors, rownames(avg_expr)),
+  receiver_celltypes,
+  drop = FALSE
+]
+
+## 行顺序按 interaction_score 排序
+receptor_order <- top_receptors[top_receptors %in% rownames(receptor_receiver_mat)]
+
+receptor_receiver_mat <- receptor_receiver_mat[
+  receptor_order,
+  ,
+  drop = FALSE
+]
+
+## 保存矩阵
+write.csv(
+  receptor_receiver_mat,
+  file.path(outdir, "Top_receptor_expression_in_TME_receivers.csv")
+)
+receptor_receiver_mat <- as.matrix(receptor_receiver_mat)
+## 画 heatmap
+p_receptor_receiver <- make_heatmap_ggplot(
+  receptor_receiver_mat,
+  x_name = "Receiver TME subclusters",
+  y_name = "Receptors",
+  color = "purple",
+  legend_title = "Average expression"
+) +
+  theme(
+    axis.text.x = element_text(size = 7, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 6)
+  )
+
+p_receptor_receiver
+
+ggsave(
+  file.path(outdir, "Top_receptor_expression_in_TME_receivers.pdf"),
+  plot = p_receptor_receiver,
+  width = 18,
+  height = 16,
+  units = "cm",
+  dpi = 600,
+  device = cairo_pdf
+)
+##13再升级###================================================================================
+############################################################
+## Ligand-Receptor pair × Receiver heatmap
+## 展示 Hepato_c09 outgoing 的 LR pair 主要作用于哪些 TME 亚群
+############################################################
+top_pair_n <- 10
+
+pair_df <- lr_outgoing_df2 %>%
+  filter(!is.na(interaction_score)) %>%
+  arrange(desc(interaction_score)) %>%
+  mutate(
+    pair = paste0(ligand, " - ", receptor)
+  ) %>%
+  group_by(pair, receiver) %>%
+  summarise(
+    score = sum(interaction_score, na.rm = TRUE),
+    ligand = first(ligand),
+    receptor = first(receptor),
+    .groups = "drop"
+  )
+
+top_pairs <- pair_df %>%
+  group_by(pair) %>%
+  summarise(total_score = sum(score, na.rm = TRUE), .groups = "drop") %>%
+  arrange(desc(total_score)) %>%
+  slice_head(n = top_pair_n) %>%
+  pull(pair)
+
+pair_receiver_mat <- pair_df %>%
+  filter(pair %in% top_pairs) %>%
+  select(pair, receiver, score) %>%
+  pivot_wider(
+    names_from = receiver,
+    values_from = score,
+    values_fill = 0
+  ) %>%
+  column_to_rownames("pair") %>%
+  as.matrix()
+
+pair_receiver_mat <- pair_receiver_mat[
+  top_pairs[top_pairs %in% rownames(pair_receiver_mat)],
+  receiver_celltypes[receiver_celltypes %in% colnames(pair_receiver_mat)],
+  drop = FALSE
+]
+
+p_pair_receiver <- make_heatmap_ggplot(
+  pair_receiver_mat,
+  x_name = " ",
+  y_name = " ",
+  color = "purple",
+  legend_title = "Outgoing score"
+) +
+  theme(
+    axis.text.x = element_text(size = 9, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 9)
+  )
+
+p_pair_receiver
+
+ggsave(
+  file.path(outdir, "Hepato_c09_Ligand_ReceptorPair_receiver_heatmap.pdf"),
+  plot = p_pair_receiver,
+  width = 4.5,
+  height = 4,
+  units = "cm",
+  dpi = 600,
+  device = cairo_pdf
+)
+
+write.csv(
+  pair_receiver_mat,
+  file.path(outdir, "Hepato_c09_Ligand_ReceptorPair_receiver_matrix.csv")
+)
+
+
+#####================================================================================
+############################################################
+## 15. 保存
+############################################################
+
+save.image(
+  file.path(outdir, "NicheNet_Hepato_c09_outgoing.Rdata")
+)
+
+cat("Finished: Hepato_c09 outgoing NicheNet-like analysis.\n")
