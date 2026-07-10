@@ -1,0 +1,83 @@
+library(dplyr)
+library(matrixStats)
+
+#========================
+# 1. 读数据
+#========================
+getwd()
+G:\HCC_靶免治疗\HCC免疫治疗bulk集合\TPM_清洗后\HCC_ICB_total
+
+meta <- read.csv("Total_metadata_452例.csv",
+                 check.names = FALSE)
+
+expr <- read.csv("HCC_ICB_altas_452cases.csv",
+                 row.names = 1,
+                 check.names = FALSE)
+range(expr)
+colSums(expr)
+expr <- log2(expr + 1)
+
+# expr: gene × sample
+gtf <- qread("Homo_sapiens_gtf")
+
+proteincoding <- gtf %>%
+  filter(gene_biotype == "protein_coding")
+
+expr <- expr[
+  rownames(expr) %in% proteincoding$gene_name,
+]
+
+mt.genes <- grep(
+  "^MT-",
+  rownames(expr),
+  value = TRUE
+)
+
+expr <- expr[
+  !rownames(expr) %in% mt.genes,
+]
+
+write.csv(expr,"HCC_ICB_altas_452cases_log2TPM.csv")
+#========================
+# 2. 按Group拆分
+#========================
+group1.samples <- meta$sample[meta$Group=="Group_01"]
+group2.samples <- meta$sample[meta$Group=="Group_02"]
+group3.samples <- meta$sample[meta$Group=="Group_03"]
+
+group1  <- expr[, group1.samples]
+group2 <- expr[, group2.samples]
+group3 <- expr[, group3.samples]
+#========================
+# 3. 每个队列MAD
+#========================
+mad1 <- rowMads(as.matrix(group1))
+mad2 <- rowMads(as.matrix(group2))
+mad3 <- rowMads(as.matrix(group3))
+ 
+gene1 <- names(sort(mad1, decreasing=TRUE))[1:6000] #取前6000个变化最大的基因
+gene2 <- names(sort(mad2, decreasing=TRUE))[1:6000] #取前6000个变化最大的基因
+gene3 <- names(sort(mad3, decreasing=TRUE))[1:6000] #取前6000个变化最大的基因
+
+gene.use <- union(union(gene1, gene2), gene3)
+
+length(gene.use)
+
+group1.final  <- group1[gene.use, ]
+group2.final <- group2[gene.use, ]
+group3.final <- group3[gene.use, ]
+
+write.table(group1.final,
+            "cogaps_input/group1_input.txt",
+            sep="\t",
+            quote=FALSE)
+
+write.table(group2.final,
+            "cogaps_input/group2_input.txt",
+            sep="\t",
+            quote=FALSE)
+
+write.table(group3.final,
+            "cogaps_input/group3_input.txt",
+            sep="\t",
+            quote=FALSE)
