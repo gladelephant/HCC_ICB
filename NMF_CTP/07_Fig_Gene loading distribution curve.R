@@ -31,23 +31,6 @@ for(ctp in plot.ctps){
   )
 }
 
-ggplot(
-  plot.df,
-  aes(
-    Rank,
-    Loading,
-    color = CTP
-  )
-) +
-  geom_line(size=1) +
-  theme_classic(base_size = 14) +
-  labs(
-    x="Gene rank",
-    y="Gene loading",
-    title="Gene loading distribution"
-  )
-
-
 
 ggplot(
   plot.df,
