@@ -15,7 +15,8 @@
 #   8. Export top genes and diagnostic plots
 # ============================================================
 setwd("D:\\HCC_ICB\\cuda_nmf_results")
-
+getwd()
+[1] "D:/HCC_ICB/cuda_nmf_results"
 # ============================================================
 # 0. Install and load packages
 # ============================================================
