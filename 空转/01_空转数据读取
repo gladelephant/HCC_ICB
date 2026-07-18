@@ -1,0 +1,46 @@
+scobj<-readRDS("D:\\HCC_ICB\\Visum\\空转6例\\P1T_Spatial.rds\\P1T_Spatial.rds")
+class(scobj[["Spatial"]])
+Layers(scobj[["Spatial"]])
+library(Seurat)
+library(SeuratDisk)
+
+scobj@assays[["Spatial"]]@data <-scobj@assays[["Spatial"]]@counts
+scobj[["Spatial"]]@scale.data <- matrix(
+  numeric(0),
+  nrow = 0,
+  ncol = 0
+)
+SaveH5Seurat(
+  scobj,
+  filename = "sample1.h5Seurat",
+  overwrite = TRUE
+)
+
+Convert(
+  "sample1.h5Seurat",
+  dest = "h5ad",
+  overwrite = TRUE
+)
+
+coords_P11_T <- GetTissueCoordinates(
+  scobj,
+  image = "image_P11_T"
+)
+
+
+coords_P11_T$barcode <- rownames(coords_P11_T)
+
+write.csv(
+  coords_P11_T,
+  "visium_coordinates_P11_T.csv",
+  row.names = FALSE
+)
+
+head(colnames(scobj))
+head(rownames(coords_P11_T))
+
+head(coords_P11_N)
+dim(coords_P11_N) 
+names(scobj@images)
+coords <- GetTissueCoordinates(scobj)
+head(coords)
