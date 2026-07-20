@@ -1,0 +1,159 @@
+## 1. 加载包
+library(tidyverse)
+library(data.table)
+library(DESeq2)
+library(pheatmap)
+library(RColorBrewer)
+library(ggplot2)
+library(EnhancedVolcano)
+library(data.table)
+library(dplyr)
+## 2. 读取 count 矩阵
+count <- read.csv("G:\\HCC_靶免治疗\\HCC免疫治疗bulk集合\\TPM_清洗后\\HCC_ICB_TPM_input_six_datasets\\Inhouse_82例_RNA_TPM_matrix.csv", row.names = 1)
+count <- log2(count + 1)
+
+summary(as.numeric(as.matrix(count)))
+
+my_gene_set <- c("MBNL3","REG3A","GLUD1","AFP","PLPPR1","AIFM2","CACFD1","C1QTNF3","B9D1","RELN","NR6A1","FAM110B","PCSK1N","ADGRD1",
+                 "CTNNA2","GLUD2","PEG3","SNTG1","OCA2","MAMSTR","SCARA3","BSN","SYN3","HAVCR1","ROBO2","DLK1","TRPM3","CALCA","NSUN7")
+
+my_gene_set <- c("CXCL14", "HIP", "PDGFRA", "SVEP1", "RSPO3", "SFRP2", "CILP",
+               "IFITM10", "CCBE1", "GDF2", "MOXD1", "TNFRSF6B", "COL10A1",
+               "ITGBL1", "PLPP4", "PTGIS", "SFRP4", "IGF1", "PTGDS",
+               "FGFR2", "RARRES1")
+
+my_gene_set <- c("FBLN5", "GJA5", "PRDM16", "SERPINE2", "TSPAN2", "TMEM178A", "TMEM100", "LTBP4",
+               "GUCY1A1", "ATP2A3", "PCSK5", "SEMA3G", "SSTR1", "DHH", "NPR3", "SULT1B1", "EGFL8", 
+               "CGNL1", "SULF1", "TNFRSF19", "ELN", "KCTD12", "SLC45A4", "TM6SF1", "AFAP1L2", "IGF2")
+
+genes_use <- intersect(my_gene_set, rownames(count))
+
+expr <- count[genes_use, ]
+
+colnames(expr) == rownames(metadata)
+
+metadata_use <- metadata[colnames(expr), , drop = FALSE]
+
+annotation_col <- data.frame(
+  ORR_group = metadata_use$ORR_group
+)
+
+rownames(annotation_col) <- rownames(metadata_use)
+
+library(pheatmap)
+my_color <- colorRampPalette(c("navy", "white", "firebrick3"))(100)
+pheatmap(
+  expr,
+  scale = "row",
+  color = my_color,
+  annotation_col = annotation_col,
+  cluster_rows = FALSE,
+  cluster_cols = TRUE,
+  show_colnames = TRUE,
+  fontsize_col = 8
+)
+
+metadata <- read.csv("G:\\HCC_靶免治疗\\HCC免疫治疗bulk集合\\TPM_清洗后\\HCC_ICB_metadata_input_six_datasets\\Inhouse_82例_RNA_82sample_metadata.csv", row.names = 1)
+
+pheatmap(expr,
+         scale = "row",
+         cluster_cols = TRUE,
+         cluster_rows = TRUE)
+
+
+library(ggplot2)
+
+ggplot(pca_df, aes(x = PC1, y = PC2, color = ORR_group)) +
+  geom_point(size = 4) +
+  xlab(paste0("PC1: ", percentVar[1], "%")) +
+  ylab(paste0("PC2: ", percentVar[2], "%")) +
+  theme_classic()
+
+library(pheatmap)
+
+topgenes <- names(sort(gene_var, decreasing=TRUE))[1:50]
+sig <- c(
+  "ROBO2","SCN1A","CALCA","PCSK1N",
+  "CADM2","TRPM3","DLK1","AFP",
+  "VEGFD","HAVCR1","ROR1","ROR2"
+)
+
+sig <- intersect(sig, rownames(expr))
+
+pheatmap(
+  expr[sig, ],
+  scale="row",
+  annotation_col=as.data.frame(colData(dds)["ORR_group"])
+)
+pheatmap(
+  expr[topgenes, ],
+  scale="row",
+  annotation_col=as.data.frame(colData(dds)["ORR_group"])
+)
+#####================================================================================
+gene_set1 <- c("MBNL3","REG3A","GLUD1","AFP","PLPPR1","AIFM2","CACFD1","C1QTNF3",
+               "B9D1","RELN","NR6A1","FAM110B","PCSK1N","ADGRD1","CTNNA2","GLUD2",
+               "PEG3","SNTG1","OCA2","MAMSTR","SCARA3","BSN","SYN3","HAVCR1",
+               "ROBO2","DLK1","TRPM3","CALCA","NSUN7")
+
+# gene_set2 <- c("CXCL14","HIP","PDGFRA","SVEP1","RSPO3","SFRP2","CILP",
+#                "IFITM10","CCBE1","GDF2","MOXD1","TNFRSF6B","COL10A1",
+#                "ITGBL1","PLPP4","PTGIS","SFRP4","IGF1","PTGDS",
+#                "FGFR2","RARRES1")
+
+# gene_set2 <- c("FBLN5", "GJA5", "PRDM16", "SERPINE2", "TSPAN2", "TMEM178A", "TMEM100", "LTBP4",
+#                  "GUCY1A1", "ATP2A3", "PCSK5", "SEMA3G", "SSTR1", "DHH", "NPR3", "SULT1B1", "EGFL8", 
+#                  "CGNL1", "SULF1", "TNFRSF19", "ELN", "KCTD12", "SLC45A4", "TM6SF1", "AFAP1L2", "IGF2")
+
+gene_set2 <- c("KIT", "PGF", "LOX", "SLC4A7", "RASSF2", "KCNE3", "GNG2",
+                  "N4BP3", "CD276", "ADAMTS7", "GABRD", "CYP46A1", "NOX4",
+                  "CHST1", "CTHRC1", "LBH", "PHLDA1", "TP53I11", "RND3",
+                  "MCAM", "ITGA2", "ACKR3", "PXDN", "THY1", "STC2", "LOXL2")
+
+expr1 <- count[intersect(gene_set1, rownames(count)), ]
+expr2 <- count[intersect(gene_set2, rownames(count)), ]
+
+score1 <- colMeans(expr1)
+score2 <- colMeans(expr2)
+
+score_df <- data.frame(
+  Sample = colnames(count),
+  Score1 = score1,
+  Score2 = score2
+)
+
+score_df
+
+high1 <- score1 > quantile(score1, 0.75)
+high2 <- score2 > quantile(score2, 0.75)
+
+both_high <- names(score1)[high1 & high2]
+
+both_high
+
+high1 <- score1 > quantile(score1, 0.8)
+high2 <- score2 > quantile(score2, 0.8)
+
+
+library(ggplot2)
+library(ggrepel)
+
+df <- data.frame(
+  score1 = score1,
+  score2 = score2,
+  Sample = colnames(count)
+)
+
+ggplot(df, aes(score1, score2)) +
+  geom_point(size = 2) +
+  geom_vline(xintercept = quantile(score1, 0.75),
+             linetype = "dashed", color = "red") +
+  geom_hline(yintercept = quantile(score2, 0.75),
+             linetype = "dashed", color = "red") +
+  geom_text_repel(aes(label = Sample),
+                  size = 3,
+                  max.overlaps = Inf) +
+  theme_classic() +
+  xlab("Gene set 1 score") +
+  ylab("Gene set 2 score")
+
