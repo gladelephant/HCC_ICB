@@ -1,0 +1,430 @@
+library(Seurat)
+library(data.table)
+
+spatial_dir <- "F:\\HCC_空转\\HCC-2T\\HCC-2T"
+
+sp <- Load10X_Spatial(
+  data.dir = spatial_dir,
+  filename = "filtered_feature_bc_matrix.h5",
+  assay = "Spatial",
+  slice = "HCC-2T",
+  filter.matrix = TRUE,
+  to.upper = FALSE
+)
+
+Images(sp)
+
+
+library(Seurat)
+library(Matrix)
+
+# 假设空间对象名称为 sp
+DefaultAssay(sp) <- "Spatial"
+
+# ============================================================
+# 1. 计算线粒体基因比例
+# ============================================================
+
+sp[["pct_counts_mt"]] <- PercentageFeatureSet(
+  sp,
+  assay = "Spatial",
+  pattern = "^MT-"
+)
+
+# ============================================================
+# 2. 过滤 spot
+#    等价于：
+#    sc.pp.filter_cells(min_counts = 500)
+#    sc.pp.filter_cells(min_genes = 200)
+#    pct_counts_mt < 25
+# ============================================================
+
+sp <- subset(
+  sp,
+  subset =
+    nCount_Spatial >= 500 &
+    nFeature_Spatial >= 200 &
+    pct_counts_mt < 25
+)
+
+# ============================================================
+# 3. 过滤基因
+#    等价于：
+#    sc.pp.filter_genes(adata, min_cells = 10)
+# ============================================================
+
+counts_mat <- GetAssayData(
+  sp,
+  assay = "Spatial",
+  layer = "counts"
+)
+
+keep_genes <- rowSums(counts_mat > 0) >= 10
+
+sp <- subset(
+  sp,
+  features = rownames(counts_mat)[keep_genes]
+)
+
+# ============================================================
+# 4. 检查过滤后的对象
+# ============================================================
+
+sp
+
+summary(sp$nCount_Spatial)
+summary(sp$nFeature_Spatial)
+summary(sp$pct_counts_mt)
+
+counts_check <- LayerData(
+  sp,
+  assay = "Spatial",
+  layer = "counts"
+)
+
+summary(rowSums(counts_check > 0))
+min(rowSums(counts_check > 0))
+
+dim(sp)
+
+#####================================================================================
+library(data.table)
+cell2location_df <- fread(
+  "cell2location_abundance.csv",
+  data.table = FALSE
+)
+
+dim(cell2location_df)
+head(cell2location_df[, 1:5])
+
+rownames(cell2location_df) <- cell2location_df$barcode
+cell2location_df$barcode <- NULL
+cell2location_df[] <- lapply(
+  cell2location_df,
+  as.numeric
+)
+
+deconv.mat <- as.matrix(cell2location_df)
+
+length(colnames(sp))
+nrow(deconv.mat)
+
+sum(colnames(sp) %in% rownames(deconv.mat))
+sum(rownames(deconv.mat) %in% colnames(sp))
+
+common_barcodes <- intersect(
+  colnames(sp),
+  rownames(deconv.mat)
+)
+
+length(common_barcodes)
+
+sp <- subset(
+  sp,
+  cells = common_barcodes
+)
+
+deconv.mat <- deconv.mat[
+  colnames(sp),
+  ,
+  drop = FALSE
+]
+
+stopifnot(
+  identical(
+    colnames(sp),
+    rownames(deconv.mat)
+  )
+)
+
+colnames(deconv.mat) <- sub(
+  "^abundance_",
+  "",
+  colnames(deconv.mat)
+)
+
+head(colnames(deconv.mat), 20)
+
+##cell2location 输出通常是每个 spot 中各细胞类型的 posterior abundance，而不是总和等于 1 的 probability
+summary(rowSums(deconv.mat)) #每行总和明显不是 1，这是正常的
+
+#行归一化成 composition proportion
+spot_total <- rowSums(deconv.mat)
+
+spot_total[spot_total == 0] <- 1
+
+deconv.prop <- deconv.mat / spot_total
+
+summary(rowSums(deconv.prop))
+
+deconv.mat <- deconv.prop
+
+deconv.raw <- as.matrix(cell2location_df)
+
+colnames(deconv.raw) <- sub(
+  "^abundance_",
+  "",
+  colnames(deconv.raw)
+)
+
+deconv.raw <- deconv.raw[
+  colnames(sp),
+  ,
+  drop = FALSE
+]
+
+spot_total <- rowSums(deconv.raw)
+spot_total[spot_total == 0] <- 1
+
+deconv.prop <- deconv.raw / spot_total
+
+abundance.metadata <- as.data.frame(deconv.raw)
+
+colnames(abundance.metadata) <- paste0(
+  "c2l_abundance_",
+  colnames(abundance.metadata)
+)
+
+sp <- AddMetaData(
+  object = sp,
+  metadata = abundance.metadata
+)
+
+proportion.metadata <- as.data.frame(deconv.prop)
+
+colnames(proportion.metadata) <- paste0(
+  "c2l_prop_",
+  colnames(proportion.metadata)
+)
+
+sp <- AddMetaData(
+  object = sp,
+  metadata = proportion.metadata
+)
+
+proportion.metadata <- as.data.frame(deconv.prop)
+
+colnames(proportion.metadata) <- paste0(
+  "c2l_prop_",
+  colnames(proportion.metadata)
+)
+
+head(
+  sp@meta.data[
+    ,
+    grep("^c2l_", colnames(sp@meta.data))
+  ]
+)
+
+#####================================================================================
+SpatialFeaturePlot(
+  sp,
+  features = c(
+    "c2l_abundance_Hepato_c09",
+    "c2l_abundance_CD8T_c05",
+    "c2l_abundance_Mesen_c03"
+  ),
+  pt.size.factor = 1.6,
+  ncol = 3
+)
+library(ISCHIA)
+
+Composition.cluster.k(
+  deconv.mat,
+  20
+)
+
+
+sp <- Composition.cluster(
+  sp,
+  deconv.mat,
+  10
+)
+
+composition_key <- "CompositionCluster_CC"
+
+table(sp[[composition_key]][, 1])
+
+# ============================================================
+# 8. 空间展示 composition cluster
+# ============================================================
+
+SpatialDimPlot(
+  sp,
+  group.by = composition_key,
+  label = FALSE,
+  pt.size.factor = 1.6
+)
+# ============================================================
+# 9. 计算各 cluster 平均细胞组成
+# ============================================================
+library(magrittr)
+library(tidyverse)
+library(dplyr)
+composition_df <- as.data.frame(deconv.mat)
+
+composition_df$CompositionCluster <- sp@meta.data[[composition_key]]
+
+cluster_mean_composition <- composition_df %>%
+  group_by(CompositionCluster) %>%
+  summarise(
+    across(
+      where(is.numeric),
+      mean,
+      na.rm = TRUE
+    )
+  )
+
+cluster_mean_long <- cluster_mean_composition %>%
+  pivot_longer(
+    cols = -CompositionCluster,
+    names_to = "Celltype",
+    values_to = "Mean_proportion"
+  )
+
+ggplot(
+  cluster_mean_long,
+  aes(
+    x = Celltype,
+    y = CompositionCluster,
+    fill = Mean_proportion
+  )
+) +
+  geom_tile() +
+  theme_classic() +
+  theme(
+    axis.text.x = element_text(
+      angle = 90,
+      hjust = 1
+    )
+  ) +
+  labs(
+    x = NULL,
+    y = "Composition cluster",
+    fill = "Mean\nproportion"
+  )
+#####================================================================================
+#####================================================================================
+cluster_mean_composition <- composition_df %>%
+  group_by(CompositionCluster) %>%
+  summarise(
+    across(
+      where(is.numeric),
+      mean,
+      na.rm = TRUE
+    ),
+    .groups = "drop"
+  )
+
+cluster_mean_long <- cluster_mean_composition %>%
+  pivot_longer(
+    cols = -CompositionCluster,
+    names_to = "Celltype",
+    values_to = "Mean_proportion"
+  ) %>%
+  group_by(Celltype) %>%
+  mutate(
+    Z_score = as.numeric(scale(Mean_proportion))
+  ) %>%
+  ungroup()
+
+ggplot(
+  cluster_mean_long,
+  aes(
+    x = Celltype,
+    y = CompositionCluster,
+    fill = Z_score
+  )
+) +
+  geom_tile() +
+  scale_fill_gradient2(
+    low = "navy",
+    mid = "white",
+    high = "firebrick",
+    midpoint = 0
+  ) +
+  theme_classic() +
+  theme(
+    axis.text.x = element_text(
+      angle = 90,
+      hjust = 1,
+      vjust = 0.5
+    )
+  ) +
+  labs(
+    x = NULL,
+    y = "Composition cluster",
+    fill = "Relative\nenrichment"
+  )
+
+
+ggplot(
+  composition_df,
+  aes(
+    x = CompositionCluster,
+    y = Hepato_c03
+  )
+) +
+  geom_violin(
+    trim = FALSE,
+    scale = "width"
+  ) +
+  geom_boxplot(
+    width = 0.15,
+    outlier.shape = NA
+  ) +
+  theme_classic() +
+  labs(
+    x = "Composition cluster",
+    y = "Hepato_c03 proportion"
+  )
+
+# ============================================================
+# 10. 找到 Hepato_c09 富集 cluster
+# ============================================================
+
+cluster_hepato_summary <- composition_df %>%
+  group_by(CompositionCluster) %>%
+  summarise(
+    Hepato_c09 = mean(Hepato_c09),
+    CD8T_c05 = mean(CD8T_c05),
+    Mesen_c03 = mean(Mesen_c03),
+    n_spots = n()
+  ) %>%
+  arrange(desc(Hepato_c09))
+
+print(cluster_hepato_summary)
+
+hepato_cluster <- as.character(
+  cluster_hepato_summary$CompositionCluster[1]
+)
+
+print(hepato_cluster)
+
+# ============================================================
+# 11. Composition UMAP
+# ============================================================
+
+sp.umap <- Composition_cluster_umap(
+  sp,
+  deconv.mat
+)
+
+sp.umap$umap.cluster.gg
+sp.umap$umap.deconv.gg
+
+# ============================================================
+# 12. Hepato_c09-rich cluster 内细胞类型共现
+# ============================================================
+
+Hepato_niche_cooccur <- spatial.celltype.cooccurence(
+  spatial.object = sp,
+  deconv.prob.mat = deconv.mat,
+  COI = hepato_cluster,
+  prob.th = 0.05,
+  Condition = unique(sp$orig.ident)
+)
+
+plot.celltype.cooccurence(
+  Hepato_niche_cooccur
+)
