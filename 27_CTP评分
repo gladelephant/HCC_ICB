@@ -1,0 +1,526 @@
+##1. 批量计算452病例的CTP score#####################################
+library(GSVA)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(readr)
+library(ggplot2)
+library(pROC)
+library(stringr)
+# 2. 读取表达矩阵和临床信息============================================================
+metadata <- read.csv(
+  "Total_metadata_452例.csv",
+  row.names = 1,
+  check.names = FALSE
+)
+row.names(metadata)<-metadata$sample
+
+expr <- read.csv(
+  "HCC_ICB_altas_452cases_log2TPM.csv",
+  row.names = 1,
+  check.names = FALSE
+)
+
+expr <- as.matrix(expr)
+mode(expr) <- "numeric"
+
+# 检查样本是否匹配
+common_samples <- intersect(
+  colnames(expr),
+  rownames(metadata)
+)
+
+expr <- expr[, common_samples, drop = FALSE]
+metadata <- metadata[common_samples, , drop = FALSE]
+
+stopifnot(
+  identical(colnames(expr), rownames(metadata))
+)
+
+table(metadata$ORR)
+table(metadata$Dataset)
+##3. 批量读取top_genes文件夹中的CSV============================================================
+gene_folder <- "G:\\HCC_靶免治疗\\CTP_V2\\output\\CTP_analysis\\top_genes"
+
+gene_files <- list.files(
+  path = gene_folder,
+  pattern = "\\.csv$",
+  full.names = TRUE
+)
+
+length(gene_files)
+basename(gene_files)
+
+#4. 读取每个文件的 gene 列，并以文件名作为CTP名称#####################################
+gene_sets <- setNames(
+  lapply(gene_files, function(file) {
+    
+    dat <- read.csv(
+      file,
+      check.names = FALSE,
+      stringsAsFactors = FALSE
+    )
+    
+    if (!"gene" %in% colnames(dat)) {
+      stop(
+        paste0(
+          "文件缺少gene列：",
+          basename(file)
+        )
+      )
+    }
+    
+    genes <- as.character(dat$gene)
+    genes <- trimws(genes)
+    genes <- genes[
+      !is.na(genes) &
+        genes != ""
+    ]
+    
+    genes <- unique(genes)
+    
+    # 只保留表达矩阵中存在的基因
+    intersect(
+      genes,
+      rownames(expr)
+    )
+  }),
+  tools::file_path_sans_ext(
+    basename(gene_files)
+  )
+)
+
+# 查看每个CTP最终使用的基因数
+gene_set_summary <- data.frame(
+  CTP = names(gene_sets),
+  n_gene_used = lengths(gene_sets),
+  stringsAsFactors = FALSE
+)
+
+gene_set_summary
+
+# ============================================================
+# 3. 批量ssGSEA
+# ============================================================
+
+param <- ssgseaParam(
+  exprData = expr,
+  geneSets = gene_sets,
+  normalize = FALSE
+)
+
+ssgsea_matrix <- gsva(
+  param,
+  verbose = TRUE
+)
+
+dim(ssgsea_matrix)
+
+ssgsea_matrix[
+  1:min(5, nrow(ssgsea_matrix)),
+  1:min(5, ncol(ssgsea_matrix))
+]
+
+# ============================================================
+# 4. 转换为长格式
+# ============================================================
+table(metadata$ORR)
+table(metadata$Dataset)
+
+ssgsea_long <- as.data.frame(ssgsea_matrix) %>%
+  tibble::rownames_to_column("CTP") %>%
+  pivot_longer(
+    cols = -CTP,
+    names_to = "Sample",
+    values_to = "Score"
+  ) %>%
+  mutate(
+    Dataset = metadata[
+      Sample,
+      "Dataset"
+    ],
+    ORR = metadata[
+      Sample,
+      "ORR"
+    ]
+  )
+
+ssgsea_long$ORR <- factor(
+  ssgsea_long$ORR,
+  levels = c(
+    "Responder",
+    "Non_responder"
+  )
+)
+
+core_score <- as.numeric(
+  ssgsea_matrix["Core_signature", ]
+)
+
+ctp_names <- setdiff(
+  rownames(ssgsea_matrix),
+  "Core_signature"
+)
+
+cor_results <- lapply(
+  ctp_names,
+  function(ctp){
+    
+    tmp <- cor.test(
+      core_score,
+      as.numeric(ssgsea_matrix[ctp, ]),
+      method = "spearman"
+    )
+    
+    data.frame(
+      CTP = ctp,
+      rho = unname(tmp$estimate),
+      pvalue = tmp$p.value
+    )
+  }
+)
+
+cor_results <- do.call(
+  rbind,
+  cor_results
+)
+
+cor_results$FDR <- p.adjust(
+  cor_results$pvalue,
+  method = "BH"
+)
+
+cor_results <- cor_results[
+  order(-abs(cor_results$rho)),
+]
+
+cor_results
+
+head(ssgsea_long)
+
+#####================================================================================
+# ============================================================
+# 6. 创建绘图文件夹
+# ============================================================
+
+plot_folder <- "CTP_ssGSEA_plots"
+
+if (!dir.exists(plot_folder)) {
+  dir.create(
+    plot_folder,
+    recursive = TRUE
+  )
+}
+
+safe_filename <- function(x) {
+  str_replace_all(
+    x,
+    "[^A-Za-z0-9_-]",
+    "_"
+  )
+}
+
+#5. 定义单个CTP的统计函数============================================================
+
+analyse_one_ctp <- function(dat) {
+  
+  dat <- dat %>%
+    filter(
+      !is.na(Score),
+      ORR %in% c(
+        "Responder",
+        "Non_responder"
+      )
+    )
+  
+  score_nr <- dat$Score[
+    dat$ORR == "Non_responder"
+  ]
+  
+  score_r <- dat$Score[
+    dat$ORR == "Responder"
+  ]
+  
+  if (
+    length(score_nr) < 3 ||
+    length(score_r) < 3
+  ) {
+    return(
+      data.frame(
+        n_total = nrow(dat),
+        n_NR = length(score_nr),
+        n_R = length(score_r),
+        median_NR = NA_real_,
+        median_R = NA_real_,
+        median_difference = NA_real_,
+        wilcox_p_greater = NA_real_,
+        wilcox_p_two_sided = NA_real_,
+        AUC = NA_real_,
+        AUC_CI_low = NA_real_,
+        AUC_CI_high = NA_real_
+      )
+    )
+  }
+  
+  # 单侧检验：NR > R
+  wilcox_greater <- wilcox.test(
+    x = score_nr,
+    y = score_r,
+    alternative = "greater",
+    exact = FALSE
+  )
+  
+  # 双侧检验
+  wilcox_two_sided <- wilcox.test(
+    x = score_nr,
+    y = score_r,
+    alternative = "two.sided",
+    exact = FALSE
+  )
+  
+  roc_obj <- roc(
+    response = dat$ORR,
+    predictor = dat$Score,
+    levels = c(
+      "Responder",
+      "Non_responder"
+    ),
+    direction = "<",
+    quiet = TRUE
+  )
+  
+  auc_ci <- ci.auc(roc_obj)
+  
+  data.frame(
+    n_total = nrow(dat),
+    n_NR = length(score_nr),
+    n_R = length(score_r),
+    median_NR = median(
+      score_nr,
+      na.rm = TRUE
+    ),
+    median_R = median(
+      score_r,
+      na.rm = TRUE
+    ),
+    median_difference =
+      median(score_nr, na.rm = TRUE) -
+      median(score_r, na.rm = TRUE),
+    wilcox_p_greater =
+      wilcox_greater$p.value,
+    wilcox_p_two_sided =
+      wilcox_two_sided$p.value,
+    AUC = as.numeric(
+      auc(roc_obj)
+    ),
+    AUC_CI_low =
+      as.numeric(auc_ci[1]),
+    AUC_CI_high =
+      as.numeric(auc_ci[3])
+  )
+}
+ctp_statistics <- ssgsea_long %>%
+  group_by(CTP) %>%
+  group_modify(
+    ~ analyse_one_ctp(.x)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    FDR_greater = p.adjust(
+      wilcox_p_greater,
+      method = "BH"
+    ),
+    FDR_two_sided = p.adjust(
+      wilcox_p_two_sided,
+      method = "BH"
+    ),
+    direction = case_when(
+      median_difference > 0 ~ "NR_high",
+      median_difference < 0 ~ "R_high",
+      TRUE ~ "No_difference"
+    )
+  ) %>%
+  arrange(
+    wilcox_p_greater
+  )
+
+ctp_statistics
+
+#7. 批量绘制NR与R箱线图============================================================
+
+for (ctp_i in unique(ssgsea_long$CTP)) {
+  
+  plot_dat <- ssgsea_long %>%
+    filter(CTP == ctp_i)
+  
+  stat_i <- ctp_statistics %>%
+    filter(CTP == ctp_i)
+  
+  pvalue_i <- stat_i$wilcox_p_greater
+  
+  y_range <- range(
+    plot_dat$Score,
+    na.rm = TRUE
+  )
+  
+  y_position <- y_range[2] +
+    0.08 * diff(y_range)
+  
+  p <- ggplot(
+    plot_dat,
+    aes(
+      x = ORR,
+      y = Score,
+      fill = ORR
+    )
+  ) +
+    geom_boxplot(
+      width = 0.45,
+      outlier.shape = NA,
+      color = "black",
+      linewidth = 0.6
+    ) +
+    geom_jitter(
+      width = 0.1,
+      size = 1.8,
+      alpha = 0.70,
+      color = "black"
+    ) +
+    annotate(
+      "text",
+      x = 1.5,
+      y = y_position,
+      label = paste0(
+        "P = ",
+        format.pval(
+          pvalue_i,
+          digits = 3,
+          eps = 0.001
+        )
+      ),
+      size = 4
+    ) +
+    scale_fill_manual(
+      values = c(
+        "Responder" = "#1f77b4",
+        "Non_responder" = "#ff7f0e"
+      )
+    ) +
+    scale_y_continuous(
+      expand = expansion(
+        mult = c(0.05, 0.15)
+      )
+    ) +
+    labs(
+      title = ctp_i,
+      x = NULL,
+      y = "ssGSEA enrichment score"
+    ) +
+    theme_classic(
+      base_size = 15
+    ) +
+    theme(
+      legend.position = "none",
+      plot.title = element_text(
+        hjust = 0.5,
+        face = "bold"
+      ),
+      axis.text.x = element_text(
+        angle = 45,
+        hjust = 1,
+        vjust = 1,
+        size = 12,
+        colour = "black"
+      ),
+      axis.text.y = element_text(
+        size = 12,
+        colour = "black"
+      ),
+      axis.line = element_line(
+        colour = "black",
+        linewidth = 0.8
+      ),
+      axis.ticks = element_line(
+        colour = "black",
+        linewidth = 0.8
+      )
+    )
+  
+  ggsave(
+    filename = file.path(
+      plot_folder,
+      paste0(
+        safe_filename(ctp_i),
+        "_ssGSEA_boxplot.pdf"
+      )
+    ),
+    plot = p,
+    width = 4.5,
+    height = 5
+  )
+  
+  ggsave(
+    filename = file.path(
+      plot_folder,
+      paste0(
+        safe_filename(ctp_i),
+        "_ssGSEA_boxplot.png"
+      )
+    ),
+    plot = p,
+    width = 4.5,
+    height = 5,
+    dpi = 600
+  )
+}
+
+#####================================================================================
+cor.test(
+  as.numeric(ssgsea_matrix["Core_signature", ]),
+  as.numeric(ssgsea_matrix["CTP_1_top100_genes", ]),
+  method = "spearman"
+)
+
+
+core_score <- as.numeric(
+  ssgsea_matrix["Core_signature", ]
+)
+
+ctp_names <- setdiff(
+  rownames(ssgsea_matrix),
+  "Core_signature"
+)
+
+cor_results <- lapply(
+  ctp_names,
+  function(ctp){
+    
+    tmp <- cor.test(
+      core_score,
+      as.numeric(ssgsea_matrix[ctp, ]),
+      method = "spearman"
+    )
+    
+    data.frame(
+      CTP = ctp,
+      rho = unname(tmp$estimate),
+      pvalue = tmp$p.value
+    )
+  }
+)
+
+cor_results <- do.call(
+  rbind,
+  cor_results
+)
+
+cor_results$FDR <- p.adjust(
+  cor_results$pvalue,
+  method = "BH"
+)
+
+cor_results <- cor_results[
+  order(-abs(cor_results$rho)),
+]
+
+cor_results
