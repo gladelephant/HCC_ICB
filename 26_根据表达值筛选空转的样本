@@ -1,0 +1,321 @@
+pathology_id <- c(
+  "A2404036",
+  "A2515755",
+  "A2500595",
+  "A2513050",
+  "A2505770",
+  "A2506946"
+)
+table(metadata$Dataset)
+dataset <- c("EHBH_cohort_01","EHBH_cohort_02")
+samples<- rownames(metadata) %in% pathology_id
+#####================================================================================
+metadata_sub <- metadata[
+  metadata$Dataset %in% dataset,
+  ,
+  drop = FALSE
+]
+
+metadata_sub <- metadata[
+  rownames(metadata) %in% pathology_id,
+  ,
+  drop = FALSE
+]
+
+expr_sub <- expr[
+  ,
+  colnames(expr) %in% metadata_sub$sample,
+  drop = FALSE
+]
+
+expr_sub <- expr[
+  ,
+  colnames(expr) %in% pathology_id,
+  drop = FALSE
+]
+
+gene_vector <- unique(c(
+  "PLPPR1",
+  "AZIN1",
+  "RELN",
+  "EIF3E",
+  "EEF1D",
+  "C1QTNF3",
+  "TRPM3",
+  "CTNNA2",
+  "REG3A",
+  "SLC30A2",
+  "AIFM2",
+  "GLUD1",
+  "CACFD1",
+  "VEGFD"
+))
+#####================================================================================
+library(pheatmap)
+
+gene_expr <- expr_sub[
+  gene_vector,
+  ,
+  drop=FALSE
+]
+
+pheatmap(
+  gene_expr,
+  scale="row",
+  annotation_col=
+    metadata_sub[, "ORR",drop=FALSE]
+)
+#####================================================================================
+#==============================
+# annotation
+#==============================
+
+annotation_col <- data.frame(
+  ORR = metadata_sub$ORR
+)
+
+rownames(annotation_col) <- rownames(metadata_sub)
+
+
+# 自定义颜色
+annotation_colors <- list(
+  ORR = c(
+    "Responder" = "#4DBBD5",
+    "Non_responder" = "#E64B35"
+  )
+)
+
+
+#==============================
+# Nature-like color palette
+#==============================
+
+heat_colors <- colorRampPalette(
+  c(
+    "#2166AC",   # blue
+    "#F7F7F7",   # white
+    "#B2182B"    # red
+  )
+)(100)
+#####================================================================================
+p <- pheatmap(
+  gene_expr,
+  scale = "row",
+  
+  # clustering
+  cluster_rows = TRUE,
+  cluster_cols = TRUE,
+  
+  # annotation
+  annotation_col = annotation_col,
+  annotation_colors = annotation_colors,
+  
+  # color
+  color = heat_colors,
+  
+  # display
+  border_color = NA,
+  
+  fontsize = 10,
+  fontsize_row = 10,
+  fontsize_col = 9,
+  
+  angle_col = 45,
+  
+  cellwidth = 22,
+  cellheight = 16,
+  
+  show_colnames = TRUE,
+  show_rownames = TRUE
+)
+
+p
+#==============================
+# gene symbol italic
+#==============================
+
+grid::grid.edit(
+  "GRID.text",
+  gp = grid::gpar(
+    fontface = "italic"
+  )
+)
+
+p
+
+
+
+p <- pheatmap(
+  gene_expr,
+  scale = "row",
+  annotation_col = annotation_col,
+  annotation_colors = annotation_colors,
+  color = heat_colors,
+  border_color = NA,
+  cluster_cols = TRUE,
+  fontsize_row = 10,
+  fontsize_col = 9
+)
+
+
+# 只修改行名字体
+library(grid)
+
+gt <- p$gtable
+
+for(i in seq_along(gt$grobs)){
+  
+  if(
+    grepl(
+      "row_names",
+      gt$grobs[[i]]$name
+    )
+  ){
+    gt$grobs[[i]]$gp <-
+      gpar(
+        fontface="italic",
+        fontsize=10
+      )
+  }
+}
+
+grid.newpage()
+grid.draw(gt)
+
+
+p <- pheatmap(
+  t(gene_expr),
+  #scale = "row",
+  
+  cluster_rows = TRUE,
+  cluster_cols = TRUE,
+  
+  # 注意 annotation 要对应行（现在是sample）
+  annotation_row = annotation_col,
+  
+  annotation_colors = annotation_colors,
+  
+  color = heat_colors,
+  
+  border_color = NA,
+  
+  fontsize = 10,
+  fontsize_row = 10,
+  fontsize_col = 9,
+  
+  angle_col = 45,
+  
+  cellwidth = 22,
+  cellheight = 16,
+  
+  show_colnames = TRUE,
+  show_rownames = TRUE
+)
+p
+
+
+#####================================================================================
+annotation_col$ORR <- factor(
+  annotation_col$ORR,
+  levels = c(
+    "Non_responder",
+    "Responder"
+  )
+)
+
+sample_order <- order(
+  annotation_col$ORR
+)
+
+heatmap_mat <- t(gene_expr)
+heatmap_mat <- heatmap_mat[
+  sample_order,
+  ,
+  drop = FALSE
+]
+
+annotation_row <- annotation_col[
+  sample_order,
+  ,
+  drop = FALSE
+]
+
+p <- pheatmap(
+  heatmap_mat,
+  
+  scale = "none",
+  
+  # 不再聚类sample
+  cluster_rows = FALSE,
+  cluster_cols = TRUE,
+  
+  annotation_row = annotation_row,
+  annotation_colors = annotation_colors,
+  
+  color = heat_colors,
+  
+  border_color = NA,
+  
+  fontsize = 10,
+  fontsize_row = 10,
+  fontsize_col = 9,
+  
+  angle_col = 45,
+  
+  cellwidth = 22,
+  cellheight = 16,
+  
+  show_colnames = TRUE,
+  show_rownames = TRUE
+)
+p
+
+
+#####================================================================================
+annotation_col$ORR <- factor(
+  annotation_col$ORR,
+  levels=c(
+    "Non_responder",
+    "Responder"
+  )
+)
+sample_order <- order(
+  annotation_col$ORR
+)
+heatmap_mat <- gene_expr[
+  gene_vector[gene_vector %in% rownames(gene_expr)],
+  sample_order,
+  drop=FALSE
+]
+
+annotation_col_order <- annotation_col[
+  sample_order,
+  ,
+  drop=FALSE
+]
+
+gap_position <- sum(
+  annotation_col_order$ORR=="Non_responder"
+)
+
+
+pheatmap(
+  heatmap_mat,
+  
+  scale="row",
+  
+  # gene可以聚类
+  cluster_rows=TRUE,
+  
+  # 样本不要整体聚类
+  cluster_cols=FALSE,
+  
+  annotation_col=annotation_col_order,
+  annotation_colors=annotation_colors,
+  
+  gaps_col=gap_position,
+  
+  color=heat_colors,
+  
+  border_color=NA
+)
