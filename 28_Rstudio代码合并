@@ -1,0 +1,48 @@
+library(gtools)
+folder<-x
+files <- list.files(
+  folder,
+  pattern = "\\.[Rr]$",
+  full.names = TRUE
+)
+
+files <- mixedsort(files)
+
+basename(files)
+output_file <- file.path(
+  folder,
+  "00_all_scripts_merged.R"
+)
+
+con <- file(
+  output_file,
+  open = "w",
+  encoding = "UTF-8"
+)
+
+for (f in files) {
+  
+  writeLines(
+    c(
+      "",
+      "",
+      "# ======================================================================",
+      paste0("# FILE: ", basename(f)),
+      "# ======================================================================",
+      ""
+    ),
+    con
+  )
+  
+  code <- readLines(
+    f,
+    warn = FALSE,
+    encoding = "UTF-8"
+  )
+  
+  writeLines(code, con)
+}
+
+close(con)
+
+cat("完成：", output_file)
