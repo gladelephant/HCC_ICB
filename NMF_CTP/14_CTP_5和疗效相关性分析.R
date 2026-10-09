@@ -45,7 +45,7 @@ ctp.score.df <- t(ctp.score.raw) |>
 
 ctp.meta.raw <- inner_join(meta, ctp.score.df, by = "sample")
 
-saveRDS(ctp.score.raw, "HCC_CTP_raw_score_bioRxiv.rds")
+saveRDS(ctp.score.raw, "HCC_CTP_raw_score.rds")
 write.csv(ctp.meta.raw, "HCC_CTP_raw_score_metadata.csv",
           row.names = FALSE)
 
