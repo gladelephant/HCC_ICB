@@ -6,6 +6,40 @@ library(ComplexHeatmap)
 library(circlize)
 library(grid)
 
+#2. 设置路径 #####================================================================================
+
+ctp_score_file <- "G:\\08_HCC_靶免治疗\\CTP_V2\\output\\CTP_analysis\\rds\\CTP_scores.rds"
+  
+metadata_file <- "G:/08_HCC_靶免治疗/HCC免疫治疗bulk集合/TPM_清洗后/HCC_ICB_total/Total_metadata_452例.csv"
+
+out_dir <- "output/CTP_analysis/selected_8_CTP_heatmaps"
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+
+#3. 读取CTP评分与疗效信息 #####================================================================================
+
+scores <- read_rds(
+  ctp_score_file
+)
+
+meta <- read_csv(
+  metadata_file,
+  show_col_types = FALSE
+) |>
+  transmute(
+    sample = as.character(sample),
+    Response = case_when(
+      ORR == "Responder" ~ "R",
+      ORR == "Non_responder" ~ "NR",
+      TRUE ~ NA_character_
+    )
+  )
+
+df <- scores |>
+  mutate(sample = as.character(sample)) |>
+  inner_join(meta, by = "sample") |>
+  filter(!is.na(Response)) |>
+  distinct(sample, .keep_all = TRUE)
+
 
 #2. 提取8个CTP评分 #####================================================================================
 
